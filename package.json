@@ -1,0 +1,43 @@
+{
+  "name": "@local/dsh-multi-session",
+  "version": "0.5.2",
+  "private": true,
+  "description": "Multi-session tabs for DeepSeek Harness: switch between sessions in one window, keep background tabs warm, and see their run state at a glance.",
+  "type": "module",
+  "license": "MIT",
+  "author": "xiaonerner0821",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiaonerner0821/dsh-multi-session.git"
+  },
+  "homepage": "https://github.com/xiaonerner0821/dsh-multi-session#readme",
+  "bugs": {
+    "url": "https://github.com/xiaonerner0821/dsh-multi-session/issues"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": ["index.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md", "LICENSE"],
+  "scripts": {
+    "check": "node --check client.js && node --check index.js"
+  },
+  "engines": {
+    "dsh": "^0.2.1-rc.1",
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    }
+  }
+}
