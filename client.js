@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-  id: '@local/dsh-multi-session',
+  id: '@xiaonerner0821/dsh-multi-session',
   factory(require) {
     const React = require('react');
     const h = React.createElement;

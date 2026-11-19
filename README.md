@@ -10,6 +10,8 @@
 
 ![标签栏截图：固定标签、待回答（黄点）与已完成未查看（青点）状态](docs/screenshot.png)
 
+> **截图里的界面主题**来自同一作者的另一个插件 **[翰墨 Hanmo](https://github.com/xiaonerner0821/dsh-hanmo)**。它是 DSH Web 界面的外观插件，提供带青色光晕的描边侧边栏、带彗星轨迹的「新建会话」按钮，以及 Han、One Dark Pro、Dracula、Monokai、Night Owl、Solarized、GitHub 等配色主题。它还提供界面与代码字体、字号、字重、正文颜色和面板透明度的调节，主面板里有带代码高亮的文件预览页。全部资源离线可用，可以和本插件一起装。安装地址：`github:xiaonerner0821/dsh-hanmo#main`。
+
 ## 安装
 
 要求：DSH `^0.2.1-rc.1`，Node.js `>=20`。暂未发布到 npm，请任选下面一种方式安装，装好后刷新页面即可生效。
@@ -17,15 +19,16 @@
 | 方式 | 在 DSH 插件管理里填写的安装地址 | 适合 |
 | --- | --- | --- |
 | GitHub 最新版 | `github:xiaonerner0821/dsh-multi-session#main` | 日常使用，跟随 `main` 升级 |
-| GitHub 指定版本 | `github:xiaonerner0821/dsh-multi-session#v0.5.3` | 固定在某个发布版本 |
+| GitHub 指定版本 | `github:xiaonerner0821/dsh-multi-session#v0.6.0` | 固定在某个发布版本 |
 | 发布包 | 从 [Releases](https://github.com/xiaonerner0821/dsh-multi-session/releases) 下载 `.tgz`，填它的绝对路径 | 离线安装 |
 | 本地目录 | 克隆本仓库后，填仓库目录的绝对路径 | 开发调试 |
 
 也可以直接在 DSH 会话里对助手说「安装插件 `github:xiaonerner0821/dsh-multi-session#main`」。
 
 - 地址必须带 `github:` 前缀，只写 `xiaonerner0821/dsh-multi-session` 会被当成 npm 包名而安装失败。
-- 安装后，插件在插件列表里显示为 `@local/dsh-multi-session`（这是包名，卸载时用它）。
-- **升级**：从 GitHub 安装时，pnpm 会把插件锁定在安装那一刻的 commit，重启 DSH 不会自动更新。要升级到最新版，先在插件管理里卸载 `@local/dsh-multi-session`，再用上面的地址重新安装，然后刷新页面。
+- 安装后，插件在插件列表里显示为 `@xiaonerner0821/dsh-multi-session`（这是包名，卸载时用它）。以后发布到 npm 也用这个名字。npm 上不带 scope 的 `dsh-multi-session` 是另一位作者的插件，和本插件无关。
+- **从 v0.5.4 及更早版本升级**：旧版本的包名是 `@local/dsh-multi-session`。请先卸载它，再按上面的地址安装。不要两个都装，否则会出现两条标签栏。
+- **升级**：从 GitHub 安装时，pnpm 会把插件锁定在安装那一刻的 commit，重启 DSH 不会自动更新。要升级到最新版，先在插件管理里卸载 `@xiaonerner0821/dsh-multi-session`，再用上面的地址重新安装，然后刷新页面。
 
 ## 功能
 
