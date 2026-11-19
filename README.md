@@ -10,7 +10,7 @@
 
 ![标签栏截图：固定标签、待回答（黄点）与已完成未查看（青点）状态](docs/screenshot.png)
 
-> **截图里的界面主题**来自同一作者的另一个插件 **[翰墨 Hanmo](https://github.com/xiaonerner0821/dsh-hanmo)**。它是 DSH Web 界面的外观插件，提供带青色光晕的描边侧边栏、带彗星轨迹的「新建会话」按钮，以及 Han、One Dark Pro、Dracula、Monokai、Night Owl、Solarized、GitHub 等配色主题。它还提供界面与代码字体、字号、字重、正文颜色和面板透明度的调节，主面板里有带代码高亮的文件预览页。全部资源离线可用，可以和本插件一起装。安装地址：`github:xiaonerner0821/dsh-hanmo#main`。
+> 截图中的界面外观来自同作者的 [翰墨 Hanmo](https://github.com/xiaonerner0821/dsh-hanmo)：磨砂玻璃输入框、新会话按钮彗星动效、8 套配色主题（含 One Dark Pro、Dracula、GitHub 等），以及字体和透明度调节，可以和本插件同时安装（`github:xiaonerner0821/dsh-hanmo#main`）。
 
 ## 安装
 
@@ -19,7 +19,7 @@
 | 方式 | 在 DSH 插件管理里填写的安装地址 | 适合 |
 | --- | --- | --- |
 | GitHub 最新版 | `github:xiaonerner0821/dsh-multi-session#main` | 日常使用，跟随 `main` 升级 |
-| GitHub 指定版本 | `github:xiaonerner0821/dsh-multi-session#v0.6.0` | 固定在某个发布版本 |
+| GitHub 指定版本 | `github:xiaonerner0821/dsh-multi-session#v0.6.1` | 固定在某个发布版本 |
 | 发布包 | 从 [Releases](https://github.com/xiaonerner0821/dsh-multi-session/releases) 下载 `.tgz`，填它的绝对路径 | 离线安装 |
 | 本地目录 | 克隆本仓库后，填仓库目录的绝对路径 | 开发调试 |
 
