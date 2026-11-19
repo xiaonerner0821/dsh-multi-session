@@ -2,6 +2,12 @@
 
 在 DeepSeek Harness 的一个窗口里，用标签同时打开多个会话。Web 和 Desktop 都能用。
 
+![多会话标签演示：切换标签、Alt+Shift+N 新建会话、运行中 / 待回答 / 未读状态、右键固定标签](docs/demo.gif)
+
+<sub>录屏来自真实的 DSH Web 界面，会话均为演示用。[高清 MP4](docs/demo.mp4)</sub>
+
+![标签栏截图：固定标签、待回答（黄点）与已完成未查看（青点）状态](docs/screenshot.png)
+
 ## 安装
 
 暂未发布到 npm。可以从 GitHub 安装：在 DSH 会话里让助手安装插件包 `github:xiaonerner0821/dsh-multi-session`，或从 [Releases](https://github.com/xiaonerner0821/dsh-multi-session/releases) 下载源码包解压后，以本地目录方式安装。安装后刷新页面即可生效。
