@@ -1,6 +1,8 @@
-# @local/dsh-multi-session
+# DSH 多会话标签栏
 
 在 DeepSeek Harness 的一个窗口里，用标签同时打开多个会话。Web 和 Desktop 都能用。
+
+[![check](https://github.com/xiaonerner0821/dsh-multi-session/actions/workflows/check.yml/badge.svg)](https://github.com/xiaonerner0821/dsh-multi-session/actions/workflows/check.yml) [![release](https://img.shields.io/github/v/release/xiaonerner0821/dsh-multi-session)](https://github.com/xiaonerner0821/dsh-multi-session/releases/latest)
 
 ![多会话标签演示：切换标签、Alt+Shift+N 新建会话、运行中 / 待回答 / 未读状态、右键固定标签](docs/demo.gif)
 
@@ -10,7 +12,20 @@
 
 ## 安装
 
-暂未发布到 npm。可以从 GitHub 安装：在 DSH 会话里让助手安装插件包 `github:xiaonerner0821/dsh-multi-session`，或从 [Releases](https://github.com/xiaonerner0821/dsh-multi-session/releases) 下载源码包解压后，以本地目录方式安装。安装后刷新页面即可生效。
+要求：DSH `^0.2.1-rc.1`，Node.js `>=20`。暂未发布到 npm，请任选下面一种方式安装，装好后刷新页面即可生效。
+
+| 方式 | 在 DSH 插件管理里填写的安装地址 | 适合 |
+| --- | --- | --- |
+| GitHub 最新版 | `github:xiaonerner0821/dsh-multi-session#main` | 日常使用，跟随 `main` 升级 |
+| GitHub 指定版本 | `github:xiaonerner0821/dsh-multi-session#v0.5.3` | 固定在某个发布版本 |
+| 发布包 | 从 [Releases](https://github.com/xiaonerner0821/dsh-multi-session/releases) 下载 `.tgz`，填它的绝对路径 | 离线安装 |
+| 本地目录 | 克隆本仓库后，填仓库目录的绝对路径 | 开发调试 |
+
+也可以直接在 DSH 会话里对助手说「安装插件 `github:xiaonerner0821/dsh-multi-session#main`」。
+
+- 地址必须带 `github:` 前缀，只写 `xiaonerner0821/dsh-multi-session` 会被当成 npm 包名而安装失败。
+- 安装后，插件在插件列表里显示为 `@local/dsh-multi-session`（这是包名，卸载时用它）。
+- **升级**：从 GitHub 安装时，pnpm 会把插件锁定在安装那一刻的 commit，重启 DSH 不会自动更新。要升级到最新版，先在插件管理里卸载 `@local/dsh-multi-session`，再用上面的地址重新安装，然后刷新页面。
 
 ## 功能
 
