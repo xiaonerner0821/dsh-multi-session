@@ -15,6 +15,12 @@ window.__ModuleLoader__.load({
     const SNAPSHOT_KEY = 'dsh-multi-session.snapshot.v3';
     const ALIVE_KEY = 'dsh-multi-session.alive.v3';
     const LEGACY_KEYS = ['dsh-multi-session.v2', 'dsh-multi-session.v1'];
+    // cross-page status facts: when a session was last looked at, and which sessions wait for an answer
+    const READ_KEY = 'dsh-multi-session.read.v1';
+    const PENDING_KEY = 'dsh-multi-session.pending.v1';
+    const READ_SKEW_MS = 2000;   // pages see the same run end a few ms apart
+    const READ_TTL_MS = 7 * 24 * 3600 * 1000;
+    const MAX_READ = 200;
     const ALIVE_BEAT_MS = 10000;
     const ALIVE_TTL_MS = 90000;  // hidden tabs may be throttled to one timer per minute
     const PAGE_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -122,6 +128,56 @@ window.__ModuleLoader__.load({
       if (!isObj(map)) return false;
       const now = Date.now();
       return Object.keys(map).some((id) => id !== PAGE_ID && typeof map[id] === 'number' && now - map[id] < ALIVE_TTL_MS);
+    }
+    function alivePages() {
+      const map = local ? readJson(local, ALIVE_KEY) : null;
+      const out = new Set([PAGE_ID]);
+      if (!isObj(map)) return out;
+      const now = Date.now();
+      for (const id of Object.keys(map)) if (typeof map[id] === 'number' && now - map[id] < ALIVE_TTL_MS) out.add(id);
+      return out;
+    }
+
+    // { [sessionId]: time some page last showed it in a visible main view }
+    function readReadMap() {
+      const map = local ? readJson(local, READ_KEY) : null;
+      const out = {};
+      if (!isObj(map)) return out;
+      const now = Date.now();
+      for (const id of Object.keys(map)) if (typeof map[id] === 'number' && now - map[id] < READ_TTL_MS) out[id] = map[id];
+      return out;
+    }
+    function markRead(id, at) {
+      if (!local || !id) return;
+      const map = readReadMap();
+      if ((map[id] || 0) >= at) return;
+      map[id] = at;
+      const ids = Object.keys(map);
+      if (ids.length > MAX_READ) ids.sort((a, b) => map[a] - map[b]).slice(0, ids.length - MAX_READ).forEach((k) => delete map[k]);
+      writeJson(local, READ_KEY, map);
+    }
+    // { [sessionId]: { page, at } }: a page that can see a pending interaction for that session
+    function readPendingMap() {
+      const map = local ? readJson(local, PENDING_KEY) : null;
+      return isObj(map) ? map : {};
+    }
+    function writePendingFacts(ids) {
+      if (!local) return;
+      const alive = alivePages();
+      const prev = readPendingMap();
+      const next = {};
+      for (const id of Object.keys(prev)) {
+        const e = prev[id];
+        if (!isObj(e) || typeof e.page !== 'string' || e.page === PAGE_ID || !alive.has(e.page)) continue;
+        next[id] = e;
+      }
+      const now = Date.now();
+      for (const id of ids) {
+        const own = isObj(prev[id]) && prev[id].page === PAGE_ID ? prev[id] : null;
+        next[id] = own || { page: PAGE_ID, at: now };
+      }
+      const a = JSON.stringify(prev); const b = JSON.stringify(next);
+      if (a !== b) writeJson(local, PENDING_KEY, next);
     }
 
     function loadInitial() {
@@ -401,6 +457,39 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
           document.addEventListener('visibilitychange', onVis);
           return () => document.removeEventListener('visibilitychange', onVis);
         }, 'multi-session: unseen completions');
+        // Last status per tab, kept outside the tab bar so moving it (title bar <-> header) keeps run transitions.
+        const lastStates = { map: new Map() };
+        // Cross-page facts shared through localStorage: "unread" and "awaiting" are tracked per page by the host,
+        // so a session read in one page, or waiting for an answer in another, would otherwise disagree here.
+        const readShared = createCell(readReadMap());
+        const pendingShared = createCell(readPendingMap());
+        const unreadSince = new Map(); // id -> when this page first showed it as unread
+        ctx.effect(() => {
+          if (!local) return undefined;
+          const onStorage = (e) => {
+            if (e.storageArea !== local) return;
+            if (e.key === READ_KEY) readShared.set(readReadMap());
+            else if (e.key === PENDING_KEY) pendingShared.set(readPendingMap());
+          };
+          window.addEventListener('storage', onStorage);
+          // the owner of a pending entry may have closed without cleaning up; drop it once its heartbeat expires
+          const timer = setInterval(() => {
+            const next = readPendingMap();
+            if (JSON.stringify(next) !== JSON.stringify(pendingShared.get())) pendingShared.set(next);
+          }, ALIVE_BEAT_MS * 3);
+          return () => {
+            window.removeEventListener('storage', onStorage);
+            clearInterval(timer);
+            writePendingFacts([]);
+          };
+        }, 'multi-session: cross-page status');
+        const noteRead = (id) => {
+          if (!id) return;
+          const now = Date.now();
+          markRead(id, now);
+          const cur = readShared.get();
+          if ((cur[id] || 0) < now) readShared.set({ ...cur, [id]: now });
+        };
         ctx.effect(() => {
           const head = document.head;
           if (!head || typeof head.querySelectorAll !== 'function' || typeof document.createElement !== 'function' || typeof MutationObserver !== 'function') return undefined;
@@ -1080,11 +1169,11 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
         const Sep = () => h('div', { className: 'dms-ms', role: 'separator' });
         const Head = ({ children }) => h('div', { className: 'dms-mh', role: 'presentation' }, children);
 
-        function statusOf(id, summary, st, warmMap, isCurrent) {
+        function statusOf(id, summary, st, warmMap, isCurrent, ignoreUnread) {
           if (st && st.pendingInteraction) return 'awaiting';
           const running = st && st.running !== undefined ? st.running : (summary && summary.running);
           if (running) return 'running';
-          if (st && st.completionUnread) return 'unread';
+          if (st && st.completionUnread && !ignoreUnread) return 'unread';
           const w = warmMap.get(id);
           if ((isCurrent || w === 'pending') && st && st.running === undefined && w !== 'ready') return 'connecting';
           if (!isCurrent && !w) return 'cold';
@@ -1257,31 +1346,82 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
           const activeId = panelNull ? cur : undefined;
           // publish the most urgent status across the whole tab bar for the browser tab icon
           const unseen = useCell(unseenDone);
+          const readMap = useCell(readShared);
+          const pendingMap = useCell(pendingShared);
           const RANK = { awaiting: 4, running: 3, unread: 2, connecting: 1 };
           const states = new Map();
+          const unreadCandidates = new Set(); // shown as unread before cross-page read facts are applied
+          const readElsewhere = new Set();    // unread here, but some page has shown it since the run ended
           let curState = null;
           if (list.byId) {
+            const nowMs = Date.now();
+            // pending interactions published by other live pages (this page's own come from the host directly)
+            let remotePending = null;
+            const pendingIds = Object.keys(pendingMap);
+            if (pendingIds.length) {
+              const alive = alivePages();
+              remotePending = new Set(pendingIds.filter((pid) => {
+                const e = pendingMap[pid];
+                return isObj(e) && e.page !== PAGE_ID && alive.has(e.page);
+              }));
+            }
             for (const id of tabs) {
-              let s = statusOf(id, list.byId[id], statusMap.get(id), warmMap, id === cur);
+              const summary = list.byId[id];
+              const status = statusMap.get(id);
+              let s = statusOf(id, summary, status, warmMap, id === cur);
+              const running = status && status.running !== undefined ? status.running : (summary && summary.running);
+              // a tab this page has not loaded yet cannot see its pending interaction; another page may
+              if (s !== 'awaiting' && running && remotePending && remotePending.has(id)) s = 'awaiting';
               if (unseen.has(id) && s !== 'awaiting' && s !== 'running') s = 'unread';
+              if (s === 'unread') {
+                unreadCandidates.add(id);
+                const since = unreadSince.has(id) ? unreadSince.get(id) : nowMs;
+                if ((readMap[id] || 0) >= since - READ_SKEW_MS) {
+                  readElsewhere.add(id);
+                  s = statusOf(id, summary, status, warmMap, id === cur, true);
+                }
+              }
               states.set(id, s);
               if ((RANK[s] || 0) > (RANK[curState] || 0)) curState = s;
             }
           }
-          const prevStates = useRef(new Map());
+          const readShowKey = useRef(null);
           useEffect(() => {
-            const prev = prevStates.current;
-            prevStates.current = states;
+            const prev = lastStates.map;
+            lastStates.map = new Map([...prev, ...states]);
+            for (const id of [...lastStates.map.keys()]) if (!list.byId || !list.byId[id]) lastStates.map.delete(id);
             const hidden = typeof document !== 'undefined' && document.hidden;
             let next = null;
             for (const [id, s] of states) {
               const was = prev.get(id);
               const busy = s === 'running' || s === 'awaiting';
-              if (busy && unseen.has(id)) { next = next || new Set(unseen); next.delete(id); }
+              if ((busy || readElsewhere.has(id)) && unseen.has(id)) { next = next || new Set(unseen); next.delete(id); }
               else if (hidden && !busy && (was === 'running' || was === 'awaiting') && !unseen.has(id)) { next = next || new Set(unseen); next.add(id); }
             }
             if (next) unseenDone.set(next);
+            const now = Date.now();
+            for (const id of unreadCandidates) if (!unreadSince.has(id)) unreadSince.set(id, now);
+            for (const id of [...unreadSince.keys()]) if (!unreadCandidates.has(id)) unreadSince.delete(id);
+            // looking at the current session in a visible page counts as reading it, for every page
+            const curWas = cur ? prev.get(cur) : undefined;
+            const curNow = cur ? states.get(cur) : undefined;
+            const curEnded = (curWas === 'running' || curWas === 'awaiting') && curNow !== 'running' && curNow !== 'awaiting';
+            if (cur && !hidden && panelNull && (curEnded || readShowKey.current !== cur)) { readShowKey.current = cur; noteRead(cur); }
+            if (hidden) readShowKey.current = null;
           });
+          useEffect(() => {
+            if (typeof document.addEventListener !== 'function') return undefined;
+            const onVis = () => {
+              if (document.hidden) return;
+              const c = currentOf(listSnap());
+              if (c) { readShowKey.current = c; noteRead(c); }
+            };
+            document.addEventListener('visibilitychange', onVis);
+            return () => document.removeEventListener('visibilitychange', onVis);
+          }, []);
+          // publish the sessions this page knows are waiting for an answer
+          const pendingKey = [...statusMap].filter(([, v]) => v && v.pendingInteraction).map(([k]) => k).sort().join('|');
+          useEffect(() => { writePendingFacts(pendingKey ? pendingKey.split('|') : []); }, [pendingKey]);
           useEffect(() => {
             const cs = stripRef.current ? getComputedStyle(stripRef.current) : null;
             const accent = cs ? cs.getPropertyValue('--dms-accent').trim() : '';
