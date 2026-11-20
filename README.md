@@ -19,7 +19,7 @@
 | 方式 | 在 DSH 插件管理里填写的安装地址 | 适合 |
 | --- | --- | --- |
 | GitHub 最新版 | `github:xiaonerner0821/dsh-multi-session#main` | 日常使用，跟随 `main` 升级 |
-| GitHub 指定版本 | `github:xiaonerner0821/dsh-multi-session#v0.7.0` | 固定在某个发布版本 |
+| GitHub 指定版本 | `github:xiaonerner0821/dsh-multi-session#v0.7.1` | 固定在某个发布版本 |
 | 发布包 | 从 [Releases](https://github.com/xiaonerner0821/dsh-multi-session/releases) 下载 `.tgz`，填它的绝对路径 | 离线安装 |
 | 本地目录 | 克隆本仓库后，填仓库目录的绝对路径 | 开发调试 |
 

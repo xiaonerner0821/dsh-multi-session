@@ -1293,7 +1293,14 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
         });
 
         // left edge in the title bar: after the Desktop-owned menu, measured by hit-testing the caption row
+        // The Desktop preload mounts its menubar as a shadow host `[data-windows-menu]` (应用 / 编辑 / 查看 / 窗口).
+        const desktopMenu = () => document.querySelector('[data-windows-menu]');
         function measureMenuEnd(stripEl) {
+          const menuHost = desktopMenu();
+          if (menuHost) {
+            const r = menuHost.getBoundingClientRect();
+            if (r.width > 0 && r.right > 0) return Math.round(r.right) + 12;
+          }
           const rootStyle = getComputedStyle(document.documentElement);
           const tbH = parseFloat(rootStyle.getPropertyValue('--dsh-windows-titlebar-height')) || 40;
           const start = parseFloat(rootStyle.getPropertyValue('--dsh-windows-menu-start')) || 48;
@@ -1475,12 +1482,31 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
                 if (el) el.style.setProperty('--dms-menu-end', `${measureMenuEnd(el)}px`);
               });
             };
+            // the menu mounts after us, and its width changes with the language and once the font loads
+            let ro = null; let watched = null;
+            const watchMenu = () => {
+              const m = desktopMenu();
+              if (m === watched) return;
+              if (ro) ro.disconnect();
+              watched = m;
+              if (m && typeof ResizeObserver === 'function') { ro = new ResizeObserver(measure); ro.observe(m); }
+              measure();
+            };
             measure();
-            const late = setTimeout(measure, 600); // the Desktop menu may mount after us
+            watchMenu();
+            const late = setTimeout(watchMenu, 600);
             const mo = new MutationObserver(measure);
-            mo.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class', 'data-fullscreen'] });
+            mo.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class', 'data-fullscreen', 'lang'] });
+            const mount = new MutationObserver(watchMenu);
+            if (document.body) mount.observe(document.body, { childList: true });
+            mount.observe(document.documentElement, { childList: true });
+            // collapsing the sidebar moves the menu right (--dsh-windows-menu-start via :has), without a size change
+            const side = new MutationObserver(measure);
+            if (document.body) side.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['data-sidebar-collapsed'] });
             window.addEventListener('resize', measure);
-            return () => { cancelAnimationFrame(raf); clearTimeout(late); mo.disconnect(); window.removeEventListener('resize', measure); };
+            let fontsOff = () => {};
+            try { const f = document.fonts; if (f && f.addEventListener) { f.addEventListener('loadingdone', measure); fontsOff = () => f.removeEventListener('loadingdone', measure); } } catch (_) { /* no font events */ }
+            return () => { cancelAnimationFrame(raf); clearTimeout(late); mo.disconnect(); mount.disconnect(); side.disconnect(); if (ro) ro.disconnect(); fontsOff(); window.removeEventListener('resize', measure); };
           }, [host]);
 
           // overflow fades; written straight to the DOM to avoid re-rendering on scroll
