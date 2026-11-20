@@ -23,7 +23,16 @@ window.__ModuleLoader__.load({
     const MAX_READ = 200;
     const ALIVE_BEAT_MS = 10000;
     const ALIVE_TTL_MS = 90000;  // hidden tabs may be throttled to one timer per minute
-    const PAGE_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    // A page removes its heartbeat when it closes. One whose heartbeat merely went quiet was most likely frozen or
+    // discarded by the browser (background tabs, memory saver) and is still open, so it keeps counting as open for
+    // this long. Desktop (Electron) never freezes its window: a quiet heartbeat there means the app was killed.
+    const NEVER_FROZEN = typeof navigator !== 'undefined' && /\bElectron\//.test(String(navigator.userAgent || ''));
+    const OPEN_KEEP_MS = NEVER_FROZEN ? ALIVE_TTL_MS : 3 * 24 * 3600 * 1000;
+    // one id per document: a live plugin reload in the same page keeps it, so its sessionStorage stays its own
+    const PAGE_ID = (() => {
+      const fresh = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      try { return window.__dshMultiSessionPageId || (window.__dshMultiSessionPageId = fresh); } catch (_) { return fresh; }
+    })();
     const RETAIN_SOURCE = 'multiSessionTabs';
     const MAX_WARM = 8;          // warm non-pinned, non-running tabs kept besides the current one
     const MAX_TABS = 60;         // hard cap on remembered tabs (hidden ones included)
@@ -122,12 +131,23 @@ window.__ModuleLoader__.load({
     const pageOf = (s) => ({ tabs: s.tabs, pinned: s.pinned, seen: s.seen, current: s.current });
     const prefsOf = (s) => ({ placement: s.placement, titlebarHeight: s.titlebarHeight, barHeight: s.barHeight, overflow: s.overflow, bottomHidden: s.bottomHidden, closed: s.closed });
 
-    // other live pages of this origin (heartbeats in localStorage)
-    function otherPagesAlive() {
+    // other pages that have not said goodbye: live ones plus frozen / discarded ones (see OPEN_KEEP_MS)
+    function otherOpenPages() {
       const map = local ? readJson(local, ALIVE_KEY) : null;
-      if (!isObj(map)) return false;
+      const out = new Set();
+      if (!isObj(map)) return out;
       const now = Date.now();
-      return Object.keys(map).some((id) => id !== PAGE_ID && typeof map[id] === 'number' && now - map[id] < ALIVE_TTL_MS);
+      for (const id of Object.keys(map)) if (id !== PAGE_ID && typeof map[id] === 'number' && now - map[id] < OPEN_KEEP_MS) out.add(id);
+      return out;
+    }
+    // this document is the same browser tab coming back (F5, crash reload, a discarded tab re-activated),
+    // not a new tab that was handed a copy of another tab's sessionStorage (opened from a link, duplicated)
+    function reloadedInPlace() {
+      try { if (document.wasDiscarded) return true; } catch (_) { /* not supported */ }
+      try {
+        const nav = performance.getEntriesByType('navigation')[0];
+        return !!nav && nav.type === 'reload';
+      } catch (_) { return false; }
     }
     function alivePages() {
       const map = local ? readJson(local, ALIVE_KEY) : null;
@@ -197,16 +217,22 @@ window.__ModuleLoader__.load({
       const prefs = sanitizePrefs(prefsRaw);
 
       // this browser tab's own tab bar:
-      //  1) sessionStorage — a reload (or a duplicated tab) keeps exactly what this tab had;
-      //  2) no other live page — first page after a browser/app restart picks up the last snapshot;
-      //  3) another page is open — start clean so the two never mirror or overwrite each other.
-      let page = session ? readJson(session, TABS_KEY) : null;
-      let source = 'session';
-      if (!page) {
-        if (otherPagesAlive()) { page = null; source = 'fresh'; }
-        else { page = (local && readJson(local, SNAPSHOT_KEY)) || legacy; source = 'snapshot'; }
-      }
-      return { state: { ...sanitizePage(page), ...prefs }, source };
+      //  1) sessionStorage written by this same browser tab (reload, crash reload, discarded tab) — keep it;
+      //     a copy the browser handed to a new tab (opened from a link, duplicated) while its owner is still
+      //     open does not count: that new tab starts clean;
+      //  2) no other open page at all (every page closed properly) — first page after a browser/app restart
+      //     picks up the last snapshot;
+      //  3) another page is open, even if the browser froze it — start clean so the two never mirror each other.
+      const open = otherOpenPages();
+      const own = session ? readJson(session, TABS_KEY) : null;
+      const owner = own && typeof own.owner === 'string' ? own.owner : null;
+      let page = null;
+      let source;
+      let inherited = null;
+      if (own && (!owner || !open.has(owner) || reloadedInPlace())) { page = own; source = 'session'; inherited = owner; }
+      else if (own || open.size) source = 'fresh';
+      else { page = (local && readJson(local, SNAPSHOT_KEY)) || legacy; source = 'snapshot'; }
+      return { state: { ...sanitizePage(page), ...prefs }, source, inherited };
     }
 
     function createStore() {
@@ -218,7 +244,8 @@ window.__ModuleLoader__.load({
       const flush = () => {
         timer = null;
         const page = pageOf(state);
-        if (session) writeJson(session, TABS_KEY, page);
+        // owner: lets a copy of this sessionStorage in another browser tab tell that it is not its own
+        if (session) writeJson(session, TABS_KEY, { ...page, owner: PAGE_ID });
         // newest tab set wins the snapshot used after a restart; it never feeds a page that is already open
         if (local) writeJson(local, SNAPSHOT_KEY, page);
         const prefs = JSON.stringify(prefsOf(state));
@@ -228,8 +255,11 @@ window.__ModuleLoader__.load({
         }
       };
       const emit = () => { for (const f of [...subs]) f(); };
+      // claim this browser tab's sessionStorage right away, so a reload before the first change reads it as its own
+      if (session) writeJson(session, TABS_KEY, { ...pageOf(state), owner: PAGE_ID });
       return {
         source: initial.source,
+        inherited: initial.inherited,
         get: () => state,
         set(fn, opts) {
           const next = fn(state);
@@ -1037,11 +1067,13 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
         // ---------------- several browser tabs: presence heartbeat + live preference sync
         ctx.effect(() => {
           if (!local) return undefined;
+          let predecessor = store.inherited; // this same browser tab's previous document, if it never said goodbye
           const beat = (remove) => {
             const map = readJson(local, ALIVE_KEY);
             const next = {};
             const now = Date.now();
-            if (isObj(map)) for (const id of Object.keys(map)) if (typeof map[id] === 'number' && now - map[id] < ALIVE_TTL_MS) next[id] = map[id];
+            if (isObj(map)) for (const id of Object.keys(map)) if (typeof map[id] === 'number' && now - map[id] < OPEN_KEEP_MS) next[id] = map[id];
+            if (predecessor) { delete next[predecessor]; predecessor = null; }
             if (remove) delete next[PAGE_ID]; else next[PAGE_ID] = now;
             writeJson(local, ALIVE_KEY, next);
           };

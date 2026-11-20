@@ -1,6 +1,6 @@
 {
   "name": "@xiaonerner0821/dsh-multi-session",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Multi-session tabs for DeepSeek Harness: switch between sessions in one window, keep background tabs warm, and see their run state at a glance.",
   "type": "module",
   "license": "MIT",
