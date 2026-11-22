@@ -1755,6 +1755,9 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
             menuEl = h(Menu, { x: menu.x, y: menu.y, onClose: closeMenu, label: t('tablist') }, items);
           }
 
+          // the new-session screen has no tabs to show: leave the strip out
+          // entirely rather than drawing an empty bar with a placeholder
+          if (!tabs.length) return null;
           const otherPlacement = placement === 'titlebar' ? 'below' : 'titlebar';
           const rightbarDisabled = !rs || !rightbarMounted;
           const isBackground = (target) => target === stripRef.current || (target.classList && (target.classList.contains('dms-tabs') || target.classList.contains('dms-scroll') || target.classList.contains('dms-tools')));
@@ -1776,11 +1779,14 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
             h('button', { type: 'button', className: 'dms-btn', 'aria-label': t('newTab'), title: `${t('newTab')}  Alt+Shift+N`, onClick: () => actions.newSession(), onContextMenu: (e) => openMenuAt('strip', null, e.currentTarget, e) }, h(Icon.plus)),
             h('button', { type: 'button', className: 'dms-btn', 'aria-label': t('recent'), 'aria-haspopup': 'menu', 'aria-expanded': !!(menu && menu.kind === 'history'), title: `${t('recent')}  Alt+Shift+T`, onClick: (e) => (menu && menu.kind === 'history' ? closeMenu() : openMenuAt('history', null, e.currentTarget, null)) }, h(Icon.history))),
           h('div', { className: 'dms-tools', 'data-end': '' },
-            h('button', {
-              type: 'button', className: 'dms-btn', disabled: !hasTitlebar, 'aria-label': t('swapPlacement'),
-              title: hasTitlebar ? `${t('swapPlacement')} → ${t(otherPlacement === 'titlebar' ? 'placeTitlebar' : 'placeBelow')}` : `${t('swapPlacement')}（${t('titlebarOnly')}）`,
+            // shown only where a title bar exists: in the browser the bar can
+            // only sit under the conversation header, so the switch has nothing
+            // to switch to
+            hasTitlebar ? h('button', {
+              type: 'button', className: 'dms-btn', 'aria-label': t('swapPlacement'),
+              title: `${t('swapPlacement')} → ${t(otherPlacement === 'titlebar' ? 'placeTitlebar' : 'placeBelow')}`,
               onClick: () => actions.setPlacement(otherPlacement),
-            }, h(Icon.swap)),
+            }, h(Icon.swap)) : null,
             h('span', { className: 'dms-sep', 'aria-hidden': true }),
             h('button', {
               type: 'button', className: 'dms-btn', disabled: rightbarDisabled, 'aria-pressed': !rightbarDisabled && rightbarExpanded,
