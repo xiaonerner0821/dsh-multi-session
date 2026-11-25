@@ -68,6 +68,10 @@ window.__ModuleLoader__.load({
       stRunning: 'Running', stAwaiting: 'Waiting for your approval or answer', stUnread: 'Finished — not read yet',
       stConnecting: 'Connecting', stIdle: 'Idle', stCold: 'Idle (not kept in memory)',
       noTabs: 'No session tabs',
+      groupNew: 'Add tab to new group', groupAddTo: 'Add tab to group', groupRemove: 'Remove from group', groupUngroup: 'Ungroup',
+      groupRename: 'Rename group', groupColor: 'Colour', groupCollapse: 'Collapse group', groupExpand: 'Expand group',
+      groupClose: 'Close group', groupNewTab: 'New tab in group', groupUnnamed: 'Group', groupTabs: 'tabs',
+      groupMoveLeft: 'Move group left', groupMoveRight: 'Move group right', groupHint: 'Drag a tab onto another tab to group them',
     };
     const ZH = {
       tablist: '已打开的会话', newSession: '新会话', untitled: '未命名会话', newTab: '新建会话标签',
@@ -87,7 +91,20 @@ window.__ModuleLoader__.load({
       stRunning: '运行中', stAwaiting: '等待你审批或回答', stUnread: '已完成，尚未查看',
       stConnecting: '连接中', stIdle: '空闲', stCold: '空闲（未常驻内存）',
       noTabs: '没有会话标签',
+      groupNew: '添加到新分组', groupAddTo: '添加到分组', groupRemove: '移出分组', groupUngroup: '取消分组',
+      groupRename: '重命名分组', groupColor: '颜色', groupCollapse: '折叠分组', groupExpand: '展开分组',
+      groupClose: '关闭分组', groupNewTab: '在分组中新建标签', groupUnnamed: '分组', groupTabs: '个标签',
+      groupMoveLeft: '分组左移', groupMoveRight: '分组右移', groupHint: '把一个标签拖到另一个标签上即可组成分组',
     };
+    // group colours: hues spread around the wheel, each readable as a chip
+    // fill with white text and as a thin underline on light and dark pages
+    const GROUP_COLORS = [
+      { id: 'blue', zh: '蓝', en: 'Blue', c: '#3b7cf0' }, { id: 'teal', zh: '青', en: 'Teal', c: '#0f9b8e' },
+      { id: 'green', zh: '绿', en: 'Green', c: '#3f9d4a' }, { id: 'amber', zh: '琥珀', en: 'Amber', c: '#d08a00' },
+      { id: 'orange', zh: '橙', en: 'Orange', c: '#e2622f' }, { id: 'rose', zh: '玫红', en: 'Rose', c: '#d9437a' },
+      { id: 'violet', zh: '紫', en: 'Violet', c: '#8a5cf0' }, { id: 'slate', zh: '灰', en: 'Slate', c: '#6b7787' },
+    ];
+    const colorOf = (id) => (GROUP_COLORS.find((g) => g.id === id) || GROUP_COLORS[0]).c;
 
     // ------------------------------------------------------------------ helpers
     const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -112,11 +129,37 @@ window.__ModuleLoader__.load({
       const seen = {};
       if (v && isObj(v.seen)) for (const k of ordered) if (typeof v.seen[k] === 'number') seen[k] = v.seen[k];
       const current = v && typeof v.current === 'string' ? v.current : null;
-      return { tabs: ordered, pinned: ordered.filter((id) => pinnedSet.has(id)), seen, current };
+      // groups: { id, name, color, collapsed }; groupOf: tab -> group id. A
+      // pinned tab is never in a group (pinned is its own group); a group
+      // with no tabs left is dropped; each group's tabs are kept together.
+      const groups = (Array.isArray(v && v.groups) ? v.groups : [])
+        .filter((g) => g && typeof g.id === 'string')
+        .map((g) => ({ id: g.id, name: String(g.name || '').slice(0, 40), color: GROUP_COLORS.some((c) => c.id === g.color) ? g.color : 'blue', collapsed: !!g.collapsed }));
+      const known = new Set(groups.map((g) => g.id));
+      const groupOf = {};
+      if (v && isObj(v.groupOf)) for (const id of ordered) if (!pinnedSet.has(id) && known.has(v.groupOf[id])) groupOf[id] = v.groupOf[id];
+      const used = new Set(Object.values(groupOf));
+      const out = { tabs: ordered, pinned: ordered.filter((id) => pinnedSet.has(id)), seen, current, groups: groups.filter((g) => used.has(g.id)), groupOf };
+      return contiguous(out);
+    }
+    /** Keep each group's tabs next to each other, the group placed where its
+     * first tab is; pinned tabs stay first. */
+    function contiguous(s) {
+      const pinned = new Set(s.pinned);
+      const out = s.tabs.filter((id) => pinned.has(id));
+      const placed = new Set();
+      for (const id of s.tabs) {
+        if (pinned.has(id) || placed.has(id)) continue;
+        const g = s.groupOf[id];
+        if (!g) { out.push(id); placed.add(id); continue; }
+        for (const x of s.tabs) if (!pinned.has(x) && s.groupOf[x] === g && !placed.has(x)) { out.push(x); placed.add(x); }
+      }
+      const used = new Set(Object.values(s.groupOf));
+      return { ...s, tabs: out, groups: s.groups.filter((g) => used.has(g.id)) };
     }
     const sanitizeClosed = (a) => (Array.isArray(a)
       ? a.filter((c) => c && typeof c.id === 'string')
-        .map((c) => ({ id: c.id, title: String(c.title || ''), index: Number(c.index) || 0, at: Number(c.at) || 0, pinned: !!c.pinned }))
+        .map((c) => ({ id: c.id, title: String(c.title || ''), index: Number(c.index) || 0, at: Number(c.at) || 0, pinned: !!c.pinned, group: typeof c.group === 'string' ? c.group : undefined }))
         .slice(0, MAX_CLOSED)
       : []);
     // what every browser tab shares (preferences + the recently-closed history)
@@ -128,7 +171,7 @@ window.__ModuleLoader__.load({
       const overflow = v && v.overflow === 'shrink' ? 'shrink' : 'scroll';
       return { placement, titlebarHeight, barHeight, overflow, bottomHidden: !!(v && v.bottomHidden), closed: sanitizeClosed(v && v.closed) };
     }
-    const pageOf = (s) => ({ tabs: s.tabs, pinned: s.pinned, seen: s.seen, current: s.current });
+    const pageOf = (s) => ({ tabs: s.tabs, pinned: s.pinned, seen: s.seen, current: s.current, groups: s.groups, groupOf: s.groupOf });
     const prefsOf = (s) => ({ placement: s.placement, titlebarHeight: s.titlebarHeight, barHeight: s.barHeight, overflow: s.overflow, bottomHidden: s.bottomHidden, closed: s.closed });
 
     // other pages that have not said goodbye: live ones plus frozen / discarded ones (see OPEN_KEEP_MS)
@@ -374,6 +417,51 @@ window.__ModuleLoader__.load({
 .dms-tab[data-drop=before]::before,.dms-tab[data-drop=after]::after{content:"";position:absolute;top:4px;bottom:4px;width:2px;border-radius:1px;background:var(--dms-accent)}
 .dms-tab[data-drop=before]::before{left:-2px}.dms-tab[data-drop=after]::after{right:-2px}
 .dms-divider{flex:none;width:1px;height:calc(var(--dms-h) - 12px);margin:0 4px;background:var(--dsw-alias-border-l2,rgba(127,127,127,.3))}
+/* ---- groups: a coloured pill leads its tabs, a hairline of the same colour
+ * runs under them; collapsed, only the pill (name + count) stays. Pinned tabs
+ * are a group of their own with a quiet pin for a chip. */
+.dms-group{position:relative;flex:none;display:flex;align-items:center;gap:2px;height:100%;padding:0 3px 0 2px;margin:0 3px}
+.dms-group::after{content:"";position:absolute;left:3px;right:3px;bottom:calc((100% - var(--dms-h)) / 2 - 3px);height:2px;border-radius:2px;background:var(--dms-g);opacity:.85;pointer-events:none;transform-origin:left center;animation:dms-gline .26s cubic-bezier(.3,.7,.2,1)}
+.dms-group[data-collapsed]::after{display:none}
+.dms-group[data-kind=pinned]{--dms-g:color-mix(in srgb,var(--dsw-alias-label-primary) 22%,transparent);margin-left:0}
+.dms-group[data-dragging]{opacity:.42}
+.dms-group[data-drop=before]::before,.dms-group[data-drop=after]::before{content:"";position:absolute;top:5px;bottom:5px;width:2px;border-radius:1px;background:var(--dms-accent)}
+.dms-group[data-drop=before]::before{left:-3px}.dms-group[data-drop=after]::before{right:-3px}
+@keyframes dms-gline{from{transform:scaleX(.2);opacity:0}}
+.dms-group:not([data-kind=pinned]) > .dms-tab{animation:dms-gin .2s cubic-bezier(.3,.7,.2,1)}
+@keyframes dms-gin{from{opacity:0;transform:translateX(-5px)}}
+.dms-gchip{flex:none;position:relative;display:inline-flex;align-items:center;justify-content:center;gap:5px;height:calc(var(--dms-h) - 7px);min-width:calc(var(--dms-h) - 7px);max-width:150px;padding:0 9px;border-radius:999px;
+  background:var(--dms-g);color:#fff;font-size:11.5px;font-weight:600;line-height:1;letter-spacing:.015em;cursor:pointer;outline:none;
+  box-shadow:inset 0 0 0 .5px rgba(0,0,0,.14),inset 0 1px 0 rgba(255,255,255,.18),0 1px 2px color-mix(in srgb,var(--dms-g) 35%,transparent);
+  transition:filter .14s ease,transform .14s cubic-bezier(.3,.7,.2,1),box-shadow .14s ease}
+.dms-gchip:hover{filter:brightness(1.08) saturate(1.05)}
+.dms-gchip:active{transform:scale(.96)}
+.dms-gchip:focus-visible{box-shadow:0 0 0 2px var(--dsw-alias-bg-base,#fff),0 0 0 3.5px var(--dms-g)}
+.dms-gchip:not([data-named]){padding:0}
+.dms-gchip[data-drop=into]{transform:scale(1.08);box-shadow:0 0 0 2px var(--dsw-alias-bg-base,#fff),0 0 0 4px var(--dms-g)}
+.dms-gname{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dms-gcount{flex:none;font:700 10px/1 var(--dms-mono);font-variant-numeric:tabular-nums}
+.dms-gchip[data-named] .dms-gcount{padding:2px 5px;margin-right:-4px;border-radius:999px;background:rgba(255,255,255,.26)}
+.dms-group[data-collapsed] .dms-gchip{box-shadow:inset 0 0 0 .5px rgba(0,0,0,.14),0 0 0 2px color-mix(in srgb,var(--dms-g) 22%,transparent)}
+.dms-gsig{position:absolute;top:-2px;right:-2px;width:8px;height:8px;border-radius:50%;background:var(--dms-accent);box-shadow:0 0 0 1.5px var(--dsw-alias-bg-base,#fff)}
+.dms-gsig[data-state=awaiting]{background:var(--dms-warn);animation:dms-breathe-dot 1.6s ease-in-out infinite}
+.dms-gsig[data-state=running]{background:#fff;box-shadow:0 0 0 1.5px var(--dms-g),0 0 0 3px var(--dsw-alias-bg-base,#fff);animation:dms-breathe-dot 1.1s ease-in-out infinite}
+@keyframes dms-breathe-dot{0%,100%{transform:scale(.8)}50%{transform:scale(1.1)}}
+.dms-gchip[data-kind=pinned]{min-width:0;width:auto;height:auto;padding:0 3px 0 2px;background:transparent;color:var(--dsw-alias-label-caption);box-shadow:none;cursor:default}
+.dms-gchip[data-kind=pinned]:hover{filter:none}
+.dms-group[data-kind=pinned][data-drop=into] .dms-gchip{color:var(--dms-accent);transform:scale(1.15)}
+.dms-ginput{flex:none;width:112px;height:calc(var(--dms-h) - 7px);padding:0 10px;border:0;border-radius:999px;outline:2px solid var(--dms-g);outline-offset:0;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary);font:600 11.5px/1 inherit;user-select:text}
+.dms-tab[data-grouped][aria-selected=true]{background:color-mix(in srgb,var(--dms-g) 11%,var(--dsw-alias-bg-layer-1,var(--dsw-alias-bg-base)))}
+.dms-tab[data-grouped] .dms-line{background:var(--dms-g)}
+.dms-tab[data-drop=merge]{background:color-mix(in srgb,var(--dms-accent) 13%,transparent);outline:1.5px dashed var(--dms-accent);outline-offset:-1.5px}
+.dms-tabs[data-drop-end]::after{content:"";flex:none;width:2px;height:calc(var(--dms-h) - 8px);margin-left:4px;border-radius:1px;background:var(--dms-accent)}
+.dms-strip[data-overflow=shrink] .dms-group{flex:0 1 auto;min-width:0}
+.dms-mi-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--dot);box-shadow:inset 0 0 0 .5px rgba(0,0,0,.18)}
+.dms-sws{display:flex;flex-wrap:wrap;gap:7px;padding:5px 10px 7px}
+.dms-sw{width:18px;height:18px;padding:0;border:0;border-radius:50%;background:var(--sw);cursor:pointer;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.18);transition:transform .12s cubic-bezier(.3,.7,.2,1),box-shadow .12s}
+.dms-sw:hover{transform:scale(1.14)}
+.dms-sw:focus-visible{outline:none;box-shadow:0 0 0 2px var(--dsw-alias-bg-overlay,#fff),0 0 0 3.5px var(--dms-accent)}
+.dms-sw[aria-checked=true]{box-shadow:0 0 0 2px var(--dsw-alias-bg-overlay,#fff),0 0 0 3.5px var(--sw)}
 .dms-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:.005em}
 .dms-label > span{display:inline}
 .dms-tab[data-marquee] .dms-label{text-overflow:clip;-webkit-mask-image:linear-gradient(90deg,transparent,#000 6px,#000 calc(100% - 8px),transparent);mask-image:linear-gradient(90deg,transparent,#000 6px,#000 calc(100% - 8px),transparent)}
@@ -765,10 +853,30 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
           return list && list.byId ? s.tabs.filter((id) => list.byId[id]) : [];
         };
         const pinnedCount = (st) => st.pinned.length;
+        // tabs on screen: a collapsed group shows only its chip
+        const shownTabs = (list, st) => {
+          const s = st || store.get();
+          const folded = new Set(s.groups.filter((g) => g.collapsed).map((g) => g.id));
+          return visibleTabs(list, s).filter((id) => !folded.has(s.groupOf[id]));
+        };
         const normalizeOrder = (s) => {
           const pinned = new Set(s.pinned);
           const tabs = [...s.tabs.filter((id) => pinned.has(id)), ...s.tabs.filter((id) => !pinned.has(id))];
-          return { ...s, tabs, pinned: tabs.filter((id) => pinned.has(id)) };
+          const groupOf = {};
+          for (const id of tabs) if (!pinned.has(id) && s.groupOf && s.groupOf[id]) groupOf[id] = s.groupOf[id];
+          return contiguous({ ...s, tabs, pinned: tabs.filter((id) => pinned.has(id)), groups: s.groups || [], groupOf });
+        };
+        const newGroupId = () => `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+        // the next colour not already used by a group (cycling when all are)
+        const nextColor = (s) => {
+          const used = s.groups.map((g) => g.color);
+          return (GROUP_COLORS.find((c) => !used.includes(c.id)) || GROUP_COLORS[s.groups.length % GROUP_COLORS.length]).id;
+        };
+        // the [start, end] tab index range a group occupies
+        const groupRange = (s, gid) => {
+          let a = -1; let b = -1;
+          s.tabs.forEach((id, i) => { if (s.groupOf[id] === gid) { if (a < 0) a = i; b = i; } });
+          return [a, b];
         };
 
         const workspaceOf = (sessionId) => {
@@ -781,6 +889,17 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
           return undefined;
         };
 
+        const pendingGroupJoin = { gid: null, before: null, at: 0 };
+        store.subscribe(() => {
+          if (!pendingGroupJoin.gid) return;
+          const s = store.get();
+          if (Date.now() - pendingGroupJoin.at > 20000) { pendingGroupJoin.gid = null; return; }
+          const fresh = s.tabs.find((id) => !pendingGroupJoin.before.has(id));
+          if (!fresh) return;
+          const gid = pendingGroupJoin.gid;
+          pendingGroupJoin.gid = null;
+          if (s.groups.some((g) => g.id === gid)) queueMicrotask(() => actions.dropToGroup(fresh, gid));
+        });
         // ---------------- actions
         const actions = {
           current: () => currentOf(listSnap()),
@@ -815,12 +934,14 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
               }
             }
             const now = Date.now();
-            const records = [...closing].map((id) => ({ id, title: titleOf(list && list.byId && list.byId[id], t), index: s0.tabs.indexOf(id), at: now, pinned: s0.pinned.includes(id) }));
+            const records = [...closing].map((id) => ({ id, title: titleOf(list && list.byId && list.byId[id], t), index: s0.tabs.indexOf(id), at: now, pinned: s0.pinned.includes(id), group: s0.groupOf[id] || undefined }));
             store.set((s) => {
               const seen = { ...s.seen };
               for (const id of closing) delete seen[id];
               const closed = [...records.reverse(), ...s.closed.filter((c) => !closing.has(c.id))].slice(0, MAX_CLOSED);
-              return { ...s, tabs: s.tabs.filter((id) => !closing.has(id)), pinned: s.pinned.filter((id) => !closing.has(id)), seen, closed };
+              const groupOf = { ...s.groupOf };
+              for (const id of closing) delete groupOf[id];
+              return normalizeOrder({ ...s, tabs: s.tabs.filter((id) => !closing.has(id)), pinned: s.pinned.filter((id) => !closing.has(id)), seen, closed, groupOf });
             });
             if (cur && closing.has(cur)) {
               if (fallback) actions.activate(fallback);
@@ -844,7 +965,9 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
               const tabs = s.tabs.filter((x) => x !== rec.id);
               tabs.splice(Math.min(rec.index, tabs.length), 0, rec.id);
               const pinned = rec.pinned ? [...s.pinned, rec.id] : s.pinned;
-              return normalizeOrder({ ...s, tabs, pinned, seen: { ...s.seen, [rec.id]: Date.now() }, closed: s.closed.filter((c) => c.id !== rec.id && !skipped.has(c)) });
+              const groupOf = { ...s.groupOf };
+              if (!rec.pinned && rec.group && s.groups.some((g) => g.id === rec.group)) groupOf[rec.id] = rec.group;
+              return normalizeOrder({ ...s, tabs, pinned, groupOf, seen: { ...s.seen, [rec.id]: Date.now() }, closed: s.closed.filter((c) => c.id !== rec.id && !skipped.has(c)) });
             });
             actions.activate(rec.id);
             return true;
@@ -856,14 +979,176 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
               if (from < 0) return s;
               const pc = pinnedCount(s);
               const isPinned = s.pinned.includes(id);
-              // tabs stay inside their own group
-              const lo = isPinned ? 0 : pc;
-              const hi = isPinned ? pc - 1 : s.tabs.length - 1;
+              // pinned tabs stay among the pinned; a grouped tab stays in its group
+              let lo = isPinned ? 0 : pc;
+              let hi = isPinned ? pc - 1 : s.tabs.length - 1;
+              const g = !isPinned && s.groupOf[id];
+              if (g) [lo, hi] = groupRange(s, g);
               const to = Math.max(lo, Math.min(hi, toIndex));
               if (to === from) return s;
               const tabs = move(s.tabs, from, to);
               return { ...s, tabs, pinned: tabs.filter((x) => s.pinned.includes(x)) };
             });
+          },
+          /** Drag and drop: put `id` before / after `target`, joining the
+           * target's group (or leaving any group when the target has none).
+           * With `merge`, dropping on the middle of an ungrouped tab makes a
+           * new group of the two. */
+          dropTo(id, target, side, merge) {
+            store.set((s) => {
+              if (id === target || !s.tabs.includes(id) || !s.tabs.includes(target)) return s;
+              if (s.pinned.includes(id) !== s.pinned.includes(target)) return s;
+              if (s.pinned.includes(id)) {
+                const tabs = s.tabs.filter((x) => x !== id);
+                tabs.splice(tabs.indexOf(target) + (side === 'after' ? 1 : 0), 0, id);
+                return normalizeOrder({ ...s, tabs, pinned: tabs.filter((x) => s.pinned.includes(x)) });
+              }
+              const groupOf = { ...s.groupOf };
+              let groups = s.groups;
+              const tg = s.groupOf[target];
+              if (merge && !tg) {
+                const gid = newGroupId();
+                groups = [...groups, { id: gid, name: '', color: nextColor(s), collapsed: false }];
+                groupOf[target] = gid; groupOf[id] = gid;
+              } else if (tg) groupOf[id] = tg;
+              else delete groupOf[id];
+              const tabs = s.tabs.filter((x) => x !== id);
+              tabs.splice(tabs.indexOf(target) + (side === 'after' ? 1 : 0), 0, id);
+              return normalizeOrder({ ...s, tabs, groups, groupOf });
+            });
+          },
+          /** Drop onto a group's chip: join that group at its end. */
+          dropToGroup(id, gid) {
+            store.set((s) => {
+              if (!s.tabs.includes(id) || s.pinned.includes(id) || !s.groups.some((g) => g.id === gid)) return s;
+              const groupOf = { ...s.groupOf, [id]: gid };
+              const [, b] = groupRange(s, gid);
+              const tabs = s.tabs.filter((x) => x !== id);
+              tabs.splice(Math.min(tabs.length, b + (s.tabs.indexOf(id) < b ? 0 : 1)), 0, id);
+              const groups = s.groups.map((g) => (g.id === gid ? { ...g, collapsed: false } : g));
+              return normalizeOrder({ ...s, tabs, groups, groupOf });
+            });
+          },
+          /** Drop just before a group, outside it. */
+          dropBeforeGroup(id, gid) {
+            store.set((s) => {
+              if (!s.tabs.includes(id) || s.pinned.includes(id)) return s;
+              const groupOf = { ...s.groupOf };
+              delete groupOf[id];
+              const tabs = s.tabs.filter((x) => x !== id);
+              const first = tabs.findIndex((x) => s.groupOf[x] === gid);
+              tabs.splice(first < 0 ? tabs.length : first, 0, id);
+              return normalizeOrder({ ...s, tabs, groupOf });
+            });
+          },
+          /** Drop on the empty end of the strip: last, in no group. */
+          dropToEnd(id) {
+            store.set((s) => {
+              if (!s.tabs.includes(id)) return s;
+              const groupOf = { ...s.groupOf };
+              delete groupOf[id];
+              const pinned = s.pinned.filter((x) => x !== id);
+              return normalizeOrder({ ...s, tabs: [...s.tabs.filter((x) => x !== id), id], pinned, groupOf });
+            });
+          },
+          /** Move a whole group before / after the unit (a loose tab or a group) holding `target`. */
+          groupMoveTo(gid, target, side) {
+            store.set((s) => {
+              if (s.pinned.includes(target) || s.groupOf[target] === gid) return s;
+              const mine = s.tabs.filter((x) => s.groupOf[x] === gid);
+              if (!mine.length) return s;
+              const rest = s.tabs.filter((x) => s.groupOf[x] !== gid);
+              const tg = s.groupOf[target];
+              const unit = tg ? rest.filter((x) => s.groupOf[x] === tg) : [target];
+              const at = side === 'after' ? rest.indexOf(unit[unit.length - 1]) + 1 : rest.indexOf(unit[0]);
+              rest.splice(at, 0, ...mine);
+              return normalizeOrder({ ...s, tabs: rest });
+            });
+          },
+          // ---- groups
+          groupNew(ids) {
+            let gid = null;
+            store.set((s) => {
+              const pick = ids.filter((id) => s.tabs.includes(id) && !s.pinned.includes(id));
+              if (!pick.length) return s;
+              gid = newGroupId();
+              const groupOf = { ...s.groupOf };
+              // the new group sits where the first chosen tab was
+              const first = s.tabs.find((x) => pick.includes(x));
+              for (const id of pick) groupOf[id] = gid;
+              const rest = s.tabs.filter((x) => !pick.includes(x));
+              const at = Math.max(0, s.tabs.indexOf(first) - s.tabs.slice(0, s.tabs.indexOf(first)).filter((x) => pick.includes(x)).length);
+              rest.splice(at, 0, ...s.tabs.filter((x) => pick.includes(x)));
+              return normalizeOrder({ ...s, tabs: rest, groups: [...s.groups, { id: gid, name: '', color: nextColor(s), collapsed: false }], groupOf });
+            });
+            return gid;
+          },
+          groupAdd(id, gid) { actions.dropToGroup(id, gid); },
+          groupRemove(id) {
+            store.set((s) => {
+              const g = s.groupOf[id];
+              if (!g) return s;
+              const groupOf = { ...s.groupOf };
+              delete groupOf[id];
+              // the tab lands right after its former group
+              const [, b] = groupRange(s, g);
+              const tabs = s.tabs.filter((x) => x !== id);
+              tabs.splice(Math.min(tabs.length, b), 0, id);
+              return normalizeOrder({ ...s, tabs, groupOf });
+            });
+          },
+          ungroup(gid) {
+            store.set((s) => {
+              const groupOf = {};
+              for (const [k, v] of Object.entries(s.groupOf)) if (v !== gid) groupOf[k] = v;
+              return normalizeOrder({ ...s, groupOf, groups: s.groups.filter((g) => g.id !== gid) });
+            });
+          },
+          groupSet(gid, patch) {
+            store.set((s) => (s.groups.some((g) => g.id === gid)
+              ? { ...s, groups: s.groups.map((g) => (g.id === gid ? { ...g, ...patch, name: patch.name != null ? String(patch.name).trim().slice(0, 40) : g.name } : g)) }
+              : s));
+          },
+          groupToggle(gid) {
+            const g = store.get().groups.find((x) => x.id === gid);
+            if (!g) return;
+            const collapsing = !g.collapsed;
+            actions.groupSet(gid, { collapsed: collapsing });
+            // collapsing the group that holds the current tab moves to the nearest tab outside it
+            const cur = actions.current();
+            const s = store.get();
+            if (collapsing && cur && s.groupOf[cur] === gid) {
+              const vis = visibleTabs(listSnap(), s).filter((id) => s.groupOf[id] !== gid && !(s.groups.find((x) => x.id === s.groupOf[id]) || {}).collapsed);
+              const i = s.tabs.indexOf(cur);
+              const next = vis.find((id) => s.tabs.indexOf(id) > i) || vis[vis.length - 1];
+              if (next) actions.activate(next);
+            }
+          },
+          groupClose(gid) { const s = store.get(); actions.close(s.tabs.filter((id) => s.groupOf[id] === gid)); },
+          groupShift(gid, delta) {
+            store.set((s) => {
+              const [a, b] = groupRange(s, gid);
+              if (a < 0) return s;
+              const pc = pinnedCount(s);
+              // the neighbouring unit: a whole group or a single loose tab
+              const ni = delta < 0 ? a - 1 : b + 1;
+              if (ni < pc || ni >= s.tabs.length) return s;
+              const ng = s.groupOf[s.tabs[ni]];
+              const [na, nb] = ng ? groupRange(s, ng) : [ni, ni];
+              const mine = s.tabs.slice(a, b + 1);
+              const theirs = s.tabs.slice(na, nb + 1);
+              const before = s.tabs.slice(0, Math.min(a, na));
+              const after = s.tabs.slice(Math.max(b, nb) + 1);
+              const tabs = delta < 0 ? [...before, ...mine, ...theirs, ...after] : [...before, ...theirs, ...mine, ...after];
+              return { ...s, tabs };
+            });
+          },
+          async groupNewTab(gid) {
+            // a new session started from the group's last tab joins the group once it appears
+            const s = store.get();
+            const members = s.tabs.filter((id) => s.groupOf[id] === gid);
+            pendingGroupJoin.gid = gid; pendingGroupJoin.before = new Set(s.tabs); pendingGroupJoin.at = Date.now();
+            actions.newSession(members[members.length - 1]);
           },
           // move by one visible neighbour (hidden tabs of offline workspaces are skipped)
           shiftTab(id, delta) {
@@ -874,6 +1159,9 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
             const neighbour = vis[i + delta];
             if (i < 0 || !neighbour) return;
             if (s.pinned.includes(id) !== s.pinned.includes(neighbour)) return;
+            const g = s.groupOf[id]; const ng = s.groupOf[neighbour];
+            if (g && ng !== g) { actions.groupRemove(id); if (delta < 0) { const s2 = store.get(); const [a] = groupRange(s2, g); actions.reorder(id, a); } return; }
+            if (!g && ng) { actions.dropTo(id, neighbour, delta < 0 ? 'after' : 'before', false); return; }
             actions.reorder(id, s.tabs.indexOf(neighbour));
           },
           togglePin(id) {
@@ -885,17 +1173,19 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
               const pc = pinned.length;
               // pinning appends to the pinned group; unpinning puts the tab right after it
               rest.splice(isPinned ? pc : pc - 1, 0, id);
-              return normalizeOrder({ ...s, tabs: rest, pinned });
+              const groupOf = { ...s.groupOf };
+              delete groupOf[id];
+              return normalizeOrder({ ...s, tabs: rest, pinned, groupOf });
             });
           },
           step(delta) {
-            const vis = visibleTabs(listSnap());
+            const vis = shownTabs(listSnap());
             if (!vis.length) return;
             const i = vis.indexOf(actions.current());
             actions.activate(vis[((i < 0 ? 0 : i + delta) % vis.length + vis.length) % vis.length]);
           },
           jump(n) {
-            const vis = visibleTabs(listSnap());
+            const vis = shownTabs(listSnap());
             const id = n >= 9 ? vis[vis.length - 1] : vis[n - 1];
             if (id) actions.activate(id);
           },
@@ -1117,6 +1407,9 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
               else if (code === 'KeyW') run = () => { const c = actions.current(); if (c) actions.close([c]); };
               else if (code === 'KeyT') run = () => actions.reopen();
               else if (code === 'KeyN') run = () => actions.newSession();
+              else if (code === 'KeyG') run = () => { const c = actions.current(); if (c) actions.groupNew([c]); };
+              else if (code === 'KeyU') run = () => { const c = actions.current(); if (c) actions.groupRemove(c); };
+              else if (code === 'KeyC') run = () => { const c = actions.current(); const g = c && store.get().groupOf[c]; if (g) actions.groupToggle(g); };
               if (!run) return;
               e.preventDefault();
               e.stopPropagation();
@@ -1162,7 +1455,7 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
             const vx = flipX ? Math.max(6, window.innerWidth - r.width - 6) : x;
             const vy = flipY ? Math.max(6, y - r.height) : y;
             setPos({ left: vx - dx, top: vy - dy, '--dms-origin': `${flipY ? 'bottom' : 'top'} ${flipX ? 'right' : 'left'}` });
-            const first = el.querySelector('.dms-mi:not(:disabled)');
+            const first = el.querySelector('.dms-mi:not(:disabled), .dms-sw');
             if (first) first.focus({ preventScroll: true });
           }, [x, y]);
           useEffect(() => {
@@ -1181,7 +1474,7 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
             };
           }, [onClose]);
           const onKeyDown = (e) => {
-            const items = [...ref.current.querySelectorAll('.dms-mi:not(:disabled)')];
+            const items = [...ref.current.querySelectorAll('.dms-mi:not(:disabled), .dms-sw')];
             const i = items.indexOf(document.activeElement);
             if (e.key === 'ArrowDown') { e.preventDefault(); (items[i + 1] || items[0]).focus(); }
             else if (e.key === 'ArrowUp') { e.preventDefault(); (items[i - 1] || items[items.length - 1]).focus(); }
@@ -1192,12 +1485,20 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
           // Rendered in place (not portalled) so theme tokens scoped to the app container still apply.
           return h('div', { ref, className: 'dms-menu', role: 'menu', 'aria-label': label, style: pos, onKeyDown, onContextMenu: (e) => e.preventDefault() }, children);
         }
-        const MenuItem = ({ label, hint, onSelect, disabled, checked, close, role }) => h('button', {
+        const MenuItem = ({ label, hint, onSelect, disabled, checked, close, role, dot }) => h('button', {
           type: 'button', className: 'dms-mi', role: role || 'menuitem', disabled: !!disabled,
           'aria-checked': role === 'menuitemradio' ? !!checked : undefined,
           onClick: () => { close(); if (!disabled) onSelect(); },
         }, role === 'menuitemradio' ? h('span', { className: 'dms-mi-c' }, checked ? h(Icon.check) : null) : null,
+        dot ? h('span', { className: 'dms-mi-dot', style: { '--dot': dot }, 'aria-hidden': true }) : null,
         h('span', { className: 'dms-mi-l' }, label), hint ? h('span', { className: 'dms-mi-k' }, hint) : null);
+        // a row of colour swatches; arrow keys move through them with the other items
+        const Swatches = ({ value, onPick, close, zh }) => h('div', { className: 'dms-sws', role: 'group' },
+          GROUP_COLORS.map((c) => h('button', {
+            key: c.id, type: 'button', className: 'dms-sw', role: 'menuitemradio', 'aria-checked': value === c.id,
+            'aria-label': zh ? c.zh : c.en, title: zh ? c.zh : c.en, style: { '--sw': c.c },
+            onClick: () => { onPick(c.id); close(); },
+          })));
         const Sep = () => h('div', { className: 'dms-ms', role: 'separator' });
         const Head = ({ children }) => h('div', { className: 'dms-mh', role: 'presentation' }, children);
 
@@ -1230,7 +1531,7 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
         const stopMarquee = (tabEl) => { tabEl.removeAttribute('data-marquee'); };
 
         const Tab = memo(function Tab(p) {
-          const { id, index, title, state, selected, focusable, pinned, renaming, draft, dropSide, dragging, renameError, cwd, api } = p;
+          const { id, index, title, state, selected, focusable, pinned, renaming, draft, dropSide, dragging, renameError, cwd, api, gcolor } = p;
           const tip = [title, p.pinnedLabel, p.stateLabel, cwd].filter(Boolean).join('\n');
           return h('div', {
             'data-id': id,
@@ -1245,6 +1546,8 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
             'data-pinned': pinned || undefined,
             'data-dragging': dragging || undefined,
             'data-drop': dropSide,
+            'data-grouped': gcolor ? true : undefined,
+            style: gcolor ? { '--dms-g': gcolor } : undefined,
             onClick: () => { if (!renaming) api.current.activate(id); },
             onDoubleClick: (e) => { e.preventDefault(); api.current.startRename(id); },
             onAuxClick: (e) => { if (e.button === 1) { e.preventDefault(); if (!pinned) api.current.close(id); } },
@@ -1373,7 +1676,10 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
           const [draft, setDraft] = useState('');
           const [overrides, setOverrides] = useState({});
           const [renameError, setRenameError] = useState(null);
-          const [drag, setDrag] = useState(null); // { id, over, side }
+          const [drag, setDrag] = useState(null); // { id | gid, over, side }
+          const [gRenaming, setGRenaming] = useState(null);
+          const [gDraft, setGDraft] = useState('');
+          const zh = t('groupUnnamed') === ZH.groupUnnamed;
           const stripRef = useRef(null);
           const scrollRef = useRef(null);
           const tabsRef = useRef(null);
@@ -1381,7 +1687,9 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
 
           const cur = currentOf(list);
           const tabs = visibleTabs(list, st);
+          const shown = shownTabs(list, st);
           const pinnedSet = new Set(st.pinned);
+          const groupById = new Map(st.groups.map((g) => [g.id, g]));
           const activeId = panelNull ? cur : undefined;
           // publish the most urgent status across the whole tab bar for the browser tab icon
           const unseen = useCell(unseenDone);
@@ -1424,6 +1732,8 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
               if ((RANK[s] || 0) > (RANK[curState] || 0)) curState = s;
             }
           }
+          const curGroup = activeId && st.groupOf[activeId] ? groupById.get(st.groupOf[activeId]) : null;
+          useEffect(() => { if (curGroup && curGroup.collapsed) actions.groupSet(curGroup.id, { collapsed: false }); }, [curGroup && curGroup.id, curGroup && curGroup.collapsed]);
           const readShowKey = useRef(null);
           useEffect(() => {
             const prev = lastStates.map;
@@ -1520,7 +1830,7 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
               if ((sc.getAttribute('data-fade') || '') !== v) { if (v) sc.setAttribute('data-fade', v); else sc.removeAttribute('data-fade'); }
             }
           }, []);
-          const layoutKey = `${tabs.join('|')}#${st.pinned.join('|')}#${renaming || ''}#${Object.keys(overrides).length}`;
+          const layoutKey = `${shown.join('|')}#${st.pinned.join('|')}#${renaming || ''}#${gRenaming || ''}#${JSON.stringify(st.groups)}#${Object.keys(overrides).length}`;
           useLayoutEffect(() => { syncGeometry(); }, [syncGeometry, layoutKey]);
           useEffect(() => {
             const el = activeId && tabsRef.current ? tabsRef.current.querySelector(`[data-id="${cssEscape(activeId)}"]`) : null;
@@ -1597,7 +1907,15 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
             onTabKeyDown: (e, id) => {
               if (renaming) return;
               const k = e.key;
-              const index = tabs.indexOf(id);
+              const index = shown.indexOf(id);
+              if (e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && (e.code === 'KeyG' || e.code === 'KeyU' || e.code === 'KeyC')) {
+                e.preventDefault();
+                if (e.code === 'KeyG') actions.groupNew([id]);
+                else if (e.code === 'KeyU') actions.groupRemove(id);
+                else if (st.groupOf[id]) actions.groupToggle(st.groupOf[id]);
+                requestAnimationFrame(() => focusTab(id));
+                return;
+              }
               if ((k === 'ArrowRight' || k === 'ArrowLeft') && e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
                 e.preventDefault();
                 actions.shiftTab(id, k === 'ArrowRight' ? 1 : -1);
@@ -1611,11 +1929,11 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
               }
               if ((k === 'ArrowRight' || k === 'ArrowLeft') && !e.altKey && !e.shiftKey) {
                 e.preventDefault();
-                const n = tabs[(index + (k === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length];
+                const n = shown[(index + (k === 'ArrowRight' ? 1 : -1) + shown.length) % shown.length];
                 if (n) focusTab(n);
                 return;
               }
-              if (k === 'Home' || k === 'End') { e.preventDefault(); focusTab(k === 'Home' ? tabs[0] : tabs[tabs.length - 1]); return; }
+              if (k === 'Home' || k === 'End') { e.preventDefault(); focusTab(k === 'Home' ? shown[0] : shown[shown.length - 1]); return; }
               if (k === 'Enter' || k === ' ') { e.preventDefault(); actions.activate(id); return; }
               if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); if (!pinnedSet.has(id)) actions.close([id]); return; }
               if (k === 'F2') { e.preventDefault(); startRename(id); return; }
@@ -1629,40 +1947,105 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
             },
             dragOver: (e, id) => {
               if (!drag) return;
-              if (pinnedSet.has(drag.id) !== pinnedSet.has(id)) return; // no dropping across the pinned boundary
-              e.preventDefault();
-              e.dataTransfer.dropEffect = 'move';
               const r = e.currentTarget.getBoundingClientRect();
-              const side = e.clientX < r.left + r.width / 2 ? 'before' : 'after';
+              const x = e.clientX - r.left;
+              let side = x < r.width / 2 ? 'before' : 'after';
+              if (drag.gid) {
+                // a whole group: lands between units, never on the pinned or inside itself
+                if (pinnedSet.has(id) || st.groupOf[id] === drag.gid) return;
+              } else if (drag.id === id) return;
+              else if (!pinnedSet.has(drag.id) && !pinnedSet.has(id) && !st.groupOf[id] && x > r.width * 0.3 && x < r.width * 0.7) side = 'merge'; // onto a loose tab: a new group of the two
+              e.preventDefault();
+              e.stopPropagation();
+              e.dataTransfer.dropEffect = 'move';
               if (drag.over !== id || drag.side !== side) setDrag({ ...drag, over: id, side });
             },
             drop: (e, id) => {
               if (!drag) return;
               e.preventDefault();
-              const all = st.tabs;
-              const from = all.indexOf(drag.id);
-              let to = all.indexOf(id) + (drag.side === 'after' ? 1 : 0);
-              if (from < to) to -= 1;
-              actions.reorder(drag.id, to);
+              e.stopPropagation();
+              if (drag.gid) actions.groupMoveTo(drag.gid, id, drag.side);
+              else {
+                if (pinnedSet.has(drag.id) !== pinnedSet.has(id)) actions.togglePin(drag.id);
+                if (drag.side === 'merge') actions.dropTo(drag.id, id, 'after', true);
+                else actions.dropTo(drag.id, id, drag.side, false);
+              }
               setDrag(null);
             },
             dragEnd: () => setDrag(null),
+            // group chips
+            chipDragStart: (e, gid) => {
+              e.dataTransfer.effectAllowed = 'move';
+              try { e.dataTransfer.setData('application/x-dsh-session-group', gid); } catch (_) { /* ignore */ }
+              setDrag({ gid, over: null, side: null });
+            },
+            chipDragOver: (e, gid) => {
+              if (!drag) return;
+              const r = e.currentTarget.getBoundingClientRect();
+              let side;
+              if (drag.gid) { if (drag.gid === gid) return; side = e.clientX < r.left + r.width / 2 ? 'before' : 'after'; }
+              else side = e.clientX < r.left + r.width * 0.35 ? 'before' : 'into';
+              e.preventDefault(); e.stopPropagation();
+              e.dataTransfer.dropEffect = 'move';
+              const over = `g:${gid}`;
+              if (drag.over !== over || drag.side !== side) setDrag({ ...drag, over, side });
+            },
+            chipDrop: (e, gid) => {
+              if (!drag) return;
+              e.preventDefault(); e.stopPropagation();
+              const members = st.tabs.filter((x) => st.groupOf[x] === gid);
+              if (drag.gid) { if (members.length) actions.groupMoveTo(drag.gid, drag.side === 'before' ? members[0] : members[members.length - 1], drag.side); }
+              else {
+                if (pinnedSet.has(drag.id)) actions.togglePin(drag.id);
+                if (drag.side === 'into') actions.dropToGroup(drag.id, gid);
+                else actions.dropBeforeGroup(drag.id, gid);
+              }
+              setDrag(null);
+            },
+            pinDragOver: (e) => {
+              if (!drag || drag.gid || pinnedSet.has(drag.id)) return;
+              e.preventDefault(); e.stopPropagation();
+              if (drag.over !== 'pin') setDrag({ ...drag, over: 'pin', side: 'into' });
+            },
+            pinDrop: (e) => {
+              if (!drag || drag.gid) return;
+              e.preventDefault(); e.stopPropagation();
+              if (!pinnedSet.has(drag.id)) actions.togglePin(drag.id);
+              setDrag(null);
+            },
+            endDragOver: (e) => {
+              if (!drag || e.target !== e.currentTarget) return;
+              e.preventDefault();
+              if (drag.over !== 'end') setDrag({ ...drag, over: 'end', side: 'after' });
+            },
+            endDrop: (e) => {
+              if (!drag || e.target !== e.currentTarget) return;
+              e.preventDefault();
+              if (drag.gid) { const last = [...st.tabs].reverse().find((x) => !pinnedSet.has(x) && st.groupOf[x] !== drag.gid); if (last) actions.groupMoveTo(drag.gid, last, 'after'); }
+              else actions.dropToEnd(drag.id);
+              setDrag(null);
+            },
+            startGroupRename: (gid) => { setMenu(null); setGRenaming(gid); setGDraft((groupById.get(gid) || {}).name || ''); },
+            commitGroupRename: () => { const gid = gRenaming; setGRenaming(null); if (gid) actions.groupSet(gid, { name: gDraft }); },
+            cancelGroupRename: () => setGRenaming(null),
           };
 
           const labels = {
             closeLabel: t('close'), unpinLabel: t('unpin'), renameLabel: t('rename'), renameFailedLabel: t('renameFailed'), pinnedLabel: t('pinned'),
           };
-          const firstFocusable = activeId && tabs.includes(activeId) ? activeId : tabs[0];
+          const firstFocusable = activeId && shown.includes(activeId) ? activeId : shown[0];
           const pc = tabs.filter((id) => pinnedSet.has(id)).length;
           const tabNodes = [];
-          tabs.forEach((id, i) => {
-            if (i === pc && pc > 0) tabNodes.push(h('span', { key: '__div', className: 'dms-divider', 'aria-hidden': true }));
+          const tabEl = (id) => {
             const summary = list.byId[id];
             const isPinned = pinnedSet.has(id);
+            const g = st.groupOf[id] ? groupById.get(st.groupOf[id]) : null;
             const state = states.get(id) || statusOf(id, summary, statusMap.get(id), warmMap, id === cur);
-            tabNodes.push(h(Tab, {
+            const i = shown.indexOf(id);
+            return h(Tab, {
               key: id, id, api,
               index: i,
+              gcolor: g ? colorOf(g.color) : undefined,
               title: overrides[id] || titleOf(summary, t),
               state, stateLabel: t(statusLabel[state]),
               selected: id === activeId,
@@ -1676,8 +2059,72 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
               cwd: summary && summary.cwd,
               closeLabel: labels.closeLabel, unpinLabel: labels.unpinLabel, renameLabel: labels.renameLabel,
               renameFailedLabel: labels.renameFailedLabel, pinnedLabel: isPinned ? labels.pinnedLabel : '',
-            }));
-          });
+            });
+          };
+          // pinned tabs: a special group at the front, a pin for its chip
+          const pinnedIds = tabs.filter((id) => pinnedSet.has(id));
+          if (pinnedIds.length) {
+            tabNodes.push(h('div', {
+              key: '__pinned', className: 'dms-group', 'data-kind': 'pinned', role: 'group', 'aria-label': t('pinned'),
+              'data-drop': drag && drag.over === 'pin' ? 'into' : undefined,
+            },
+            h('span', {
+              className: 'dms-gchip', 'data-kind': 'pinned', title: t('pinned'), 'aria-hidden': true,
+              onDragOver: (e) => api.current.pinDragOver(e), onDrop: (e) => api.current.pinDrop(e),
+            }, h(Icon.pin)),
+            ...pinnedIds.map(tabEl)));
+          }
+          const RANKG = { awaiting: 3, running: 2, unread: 1 };
+          const emitted = new Set();
+          for (const id of tabs) {
+            if (pinnedSet.has(id)) continue;
+            const gid = st.groupOf[id];
+            if (!gid) { tabNodes.push(tabEl(id)); continue; }
+            if (emitted.has(gid)) continue;
+            emitted.add(gid);
+            const g = groupById.get(gid);
+            const members = tabs.filter((x) => st.groupOf[x] === gid);
+            let urgent = null;
+            for (const m of members) { const s = states.get(m); if ((RANKG[s] || 0) > (RANKG[urgent] || 0)) urgent = s; }
+            const name = g.name;
+            const label = name || t('groupUnnamed');
+            const tip = `${label} · ${members.length} ${t('groupTabs')}\n${g.collapsed ? t('groupExpand') : t('groupCollapse')}  Alt+Shift+C`;
+            const overChip = drag && drag.over === `g:${gid}`;
+            tabNodes.push(h('div', {
+              key: `g:${gid}`, className: 'dms-group', role: 'group', 'aria-label': label,
+              'data-collapsed': g.collapsed || undefined, 'data-dragging': drag && drag.gid === gid ? true : undefined,
+              'data-drop': overChip && drag.side === 'before' ? 'before' : overChip && drag.side === 'after' ? 'after' : undefined,
+              style: { '--dms-g': colorOf(g.color) },
+            },
+            gRenaming === gid
+              ? h('input', {
+                className: 'dms-ginput', value: gDraft, autoFocus: true, spellCheck: false, 'aria-label': t('groupRename'), placeholder: t('groupUnnamed'),
+                onChange: (e) => setGDraft(e.target.value), onFocus: (e) => e.target.select(),
+                onBlur: () => api.current.commitGroupRename(),
+                onKeyDown: (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } else if (e.key === 'Escape') { e.preventDefault(); api.current.cancelGroupRename(); } },
+              })
+              : h('div', {
+                className: 'dms-gchip', role: 'button', tabIndex: 0, 'aria-expanded': !g.collapsed, title: tip,
+                'data-named': name ? true : undefined, 'data-drop': overChip && drag.side === 'into' ? 'into' : undefined,
+                draggable: true,
+                onClick: () => actions.groupToggle(gid),
+                onDoubleClick: (e) => { e.preventDefault(); api.current.startGroupRename(gid); },
+                onContextMenu: (e) => openMenuAt('group', gid, e.currentTarget, e),
+                onKeyDown: (e) => {
+                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); actions.groupToggle(gid); }
+                  else if (e.key === 'F2') { e.preventDefault(); api.current.startGroupRename(gid); }
+                  else if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) { e.preventDefault(); openMenuAt('group', gid, e.currentTarget, null); }
+                },
+                onDragStart: (e) => api.current.chipDragStart(e, gid),
+                onDragOver: (e) => api.current.chipDragOver(e, gid),
+                onDrop: (e) => api.current.chipDrop(e, gid),
+                onDragEnd: () => api.current.dragEnd(),
+              },
+              name ? h('span', { className: 'dms-gname' }, name) : null,
+              g.collapsed || !name ? h('span', { className: 'dms-gcount' }, String(members.length)) : null,
+              g.collapsed && urgent ? h('span', { className: 'dms-gsig', 'data-state': urgent, 'aria-hidden': true }) : null),
+            ...(g.collapsed ? [] : members.map(tabEl))));
+          }
 
           const placementItems = (close) => {
             const items = [
@@ -1725,6 +2172,14 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
                 h(MenuItem, { key: 'p', label: isPinned ? t('unpin') : t('pin'), onSelect: () => actions.togglePin(id), close }),
                 h(MenuItem, { key: 'r', label: t('rename'), hint: 'F2', onSelect: () => startRename(id), close }),
                 h(MenuItem, { key: 'n', label: t('newTab'), hint: 'Alt+Shift+N', onSelect: () => actions.newSession(id), close }),
+                h(Sep, { key: 'sg' }),
+                h(MenuItem, { key: 'gn', label: t('groupNew'), hint: 'Alt+Shift+G', disabled: isPinned, onSelect: () => actions.groupNew([id]), close }),
+                ...(isPinned ? [] : (() => {
+                  const others = st.groups.filter((g) => g.id !== st.groupOf[id]);
+                  return others.length ? [h(Head, { key: 'gh' }, t('groupAddTo')),
+                    ...others.slice(0, 8).map((g) => h(MenuItem, { key: `ga${g.id}`, dot: colorOf(g.color), label: g.name || `${t('groupUnnamed')} · ${st.tabs.filter((x) => st.groupOf[x] === g.id).length}`, onSelect: () => actions.groupAdd(id, g.id), close }))] : [];
+                })()),
+                st.groupOf[id] ? h(MenuItem, { key: 'gr', label: t('groupRemove'), hint: 'Alt+Shift+U', onSelect: () => actions.groupRemove(id), close }) : null,
                 h(Sep, { key: 's1' }),
                 h(MenuItem, { key: 'ml', label: t('moveLeft'), hint: 'Shift+←', disabled: i <= groupStart, onSelect: () => actions.shiftTab(id, -1), close }),
                 h(MenuItem, { key: 'mr', label: t('moveRight'), hint: 'Shift+→', disabled: i < 0 || i >= groupEnd, onSelect: () => actions.shiftTab(id, 1), close }),
@@ -1736,6 +2191,26 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
                 h(Sep, { key: 's3' }),
                 ...placementItems(close),
               ];
+            } else if (menu.kind === 'group') {
+              const gid = menu.id;
+              const g = groupById.get(gid);
+              if (g) {
+                const [a, b] = (() => { let x = -1; let y = -1; st.tabs.forEach((id, k) => { if (st.groupOf[id] === gid) { if (x < 0) x = k; y = k; } }); return [x, y]; })();
+                items = [
+                  h(MenuItem, { key: 'rn', label: t('groupRename'), hint: 'F2', onSelect: () => api.current.startGroupRename(gid), close }),
+                  h(Head, { key: 'ch' }, t('groupColor')),
+                  h(Swatches, { key: 'sw', value: g.color, zh, onPick: (c) => actions.groupSet(gid, { color: c }), close }),
+                  h(Sep, { key: 's0' }),
+                  h(MenuItem, { key: 'tg', label: g.collapsed ? t('groupExpand') : t('groupCollapse'), hint: 'Alt+Shift+C', onSelect: () => actions.groupToggle(gid), close }),
+                  h(MenuItem, { key: 'nt', label: t('groupNewTab'), onSelect: () => actions.groupNewTab(gid), close }),
+                  h(Sep, { key: 's1' }),
+                  h(MenuItem, { key: 'ml', label: t('groupMoveLeft'), disabled: a <= pc, onSelect: () => actions.groupShift(gid, -1), close }),
+                  h(MenuItem, { key: 'mr', label: t('groupMoveRight'), disabled: b < 0 || b >= st.tabs.length - 1, onSelect: () => actions.groupShift(gid, 1), close }),
+                  h(Sep, { key: 's2' }),
+                  h(MenuItem, { key: 'ug', label: t('groupUngroup'), onSelect: () => actions.ungroup(gid), close }),
+                  h(MenuItem, { key: 'cl', label: t('groupClose'), onSelect: () => actions.groupClose(gid), close }),
+                ];
+              } else items = [];
             } else if (menu.kind === 'history') {
               items = [h(Head, { key: 'h' }, t('recent'))];
               if (!st.closed.length) items.push(h(MenuItem, { key: 'e', label: t('recentEmpty'), disabled: true, onSelect: () => {}, close }));
@@ -1773,7 +2248,11 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
             onScroll: syncGeometry,
             onWheel: (e) => { const sc = scrollRef.current; if (sc && Math.abs(e.deltaY) > Math.abs(e.deltaX) && sc.scrollWidth > sc.clientWidth) sc.scrollLeft += e.deltaY; },
           },
-          h('div', { ref: tabsRef, className: 'dms-tabs', role: 'tablist', 'aria-label': t('tablist'), 'aria-orientation': 'horizontal' },
+          h('div', {
+            ref: tabsRef, className: 'dms-tabs', role: 'tablist', 'aria-label': t('tablist'), 'aria-orientation': 'horizontal',
+            'data-drop-end': drag && drag.over === 'end' ? true : undefined,
+            onDragOver: (e) => api.current.endDragOver(e), onDrop: (e) => api.current.endDrop(e),
+          },
             tabs.length ? tabNodes : h('span', { className: 'dms-empty' }, t('noTabs')))),
           h('div', { className: 'dms-tools' },
             h('button', { type: 'button', className: 'dms-btn', 'aria-label': t('newTab'), title: `${t('newTab')}  Alt+Shift+N`, onClick: () => actions.newSession(), onContextMenu: (e) => openMenuAt('strip', null, e.currentTarget, e) }, h(Icon.plus)),
