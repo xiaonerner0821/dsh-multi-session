@@ -1,7 +1,8 @@
-// Behaviour test: closing the last tab must never leave its Session on screen without a tab.
-// Run: node test/close-last.test.mjs  (no dependencies; loads client.js into a fake page)
+// Behaviour test: closing the last tab must actually leave its Session — the main view has to move on,
+// and the closed tab must never come back. Run: node test/close-last.test.mjs
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { setImmediate as tick } from 'node:timers/promises';
 import vm from 'node:vm';
 
 const SRC = readFileSync(fileURLToPath(new URL('../client.js', import.meta.url)), 'utf8');
@@ -15,13 +16,11 @@ const React = {
   useSyncExternalStore: (s, g) => g(), useEffect() {}, useLayoutEffect() {},
 };
 
-// A page with a session catalog; `startSession` behaviour is scripted per case.
-function makePage({ sessions, current, tabs, groups, groupOf, onStart }) {
+// A page with a session catalog. `connect` scripts what connectWorkspace does; `onStart` what startSession does.
+function makePage({ sessions, current, tabs, groups, groupOf, connect = 'ok', blankId = 'blank1', onStart = () => {} }) {
   const timers = [];
-  const page = { now: 1_000_000, started: 0, opened: [] };
+  const page = { now: 1_000_000, started: 0, connected: 0, opened: [], rows: sessions.map((r) => ({ ...r })), current };
   const byId = () => Object.fromEntries(page.rows.map((r) => [r.id, { id: r.id, title: r.title || '', blank: !!r.blank, running: false, retainedBy: r.id === page.current ? { mainView: 1 } : {}, updatedAt: 0 }]));
-  page.rows = sessions.map((r) => ({ ...r }));
-  page.current = current;
   const subs = new Set();
   page.list = () => ({ phase: 'ready', ids: page.rows.map((r) => r.id), byId: byId() });
   page.emit = () => { for (const f of [...subs]) f(); };
@@ -63,17 +62,23 @@ function makePage({ sessions, current, tabs, groups, groupOf, onStart }) {
       retain: () => ({ ready: new Promise(() => {}), release() {} }),
       retainInfo: () => ({ getSnapshot: () => ({ retainedBy: {} }), subscribe: () => () => {} }),
     },
+    workspaces: { list: { getSnapshot: () => ({ items: [{ workspaceId: 'w1', sessionIds: page.rows.map((r) => r.id) }] }) } },
     uiWorkspace: {
       openSession: (id) => { page.opened.push(id); page.show(id); },
+      connectWorkspace: () => {
+        page.connected++;
+        if (connect === 'reject') return Promise.reject(new Error('connect failed'));
+        if (connect === 'empty') return Promise.resolve(undefined);
+        return Promise.resolve(blankId);
+      },
       startSession: () => { page.started++; onStart(page); },
     },
     layout: { panelInfo: { getSnapshot: () => ({ activePanelId: null }) }, selectPanel() {} },
   };
+  ctx.get = (name) => (name === 'workspaces' ? ctx.workspaces : undefined);
   factory((n) => (n === 'react' ? React : {})).apply(ctx);
-  page.flush = () => page.advance(200); // store writes are coalesced for 120 ms
-  page.tabs = () => { page.flush(); return JSON.parse(session.get(TABS)).tabs; };
-  page.state = () => { page.flush(); return JSON.parse(session.get(TABS)); };
-  // drive the real tab strip: render the seat, find the close button of a tab and click it
+  page.tabs = () => { page.advance(200); return JSON.parse(session.get(TABS)).tabs; }; // store writes coalesce for 120 ms
+  page.state = () => { page.advance(200); return JSON.parse(session.get(TABS)); };
   const seat = seats['conversation.header.leading'];
   page.clickClose = (id) => {
     const root = seat({ useSessions: (s) => s(page.list()), useSessionStatus: (s) => s(new Map()), usePanelInfo: (s) => s({ activePanelId: null }) });
@@ -84,8 +89,7 @@ function makePage({ sessions, current, tabs, groups, groupOf, onStart }) {
       if (typeof n !== 'object') return;
       if (typeof n.type === 'function') { render(n.type(n.props)); return; }
       if (n.props && n.props['data-id'] === id) {
-        const kids = [].concat(n.props.children || []).flat(Infinity);
-        btn = kids.find((k) => k && k.props && k.props.className === 'dms-x');
+        btn = [].concat(n.props.children || []).flat(Infinity).find((k) => k && k.props && k.props.className === 'dms-x');
         return;
       }
       if (n.props) render(n.props.children);
@@ -104,69 +108,86 @@ const check = (label, got, want) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}: ${JSON.stringify(got)}${ok ? '' : `  (want ${JSON.stringify(want)})`}`);
 };
 
-// 1. Last tab, ordinary Session; New Session opens a fresh blank -> the old tab goes, the blank gets one.
+// 1. Last tab, an ordinary Session: a fresh blank is opened and shown, without the racy New Session path.
 {
-  const p = makePage({ sessions: [{ id: 'a', title: 'A' }, { id: 'blank1', blank: true }], current: 'a', tabs: ['a'],
-    onStart: (pg) => pg.show('blank1') });
+  const p = makePage({ sessions: [{ id: 'a', title: 'A' }, { id: 'blank1', blank: true }], current: 'a', tabs: ['a'] });
   p.clickClose('a');
-  check('1 last tab -> new blank opened', p.current, 'blank1');
+  await tick();
+  check('1 opens the fresh blank', p.opened, ['blank1']);
+  check('1 leaves the race-prone startSession out', p.started, 0);
   check('1 tabs follow the view', p.tabs(), ['blank1']);
+  check('1 the closed tab stays closed', p.tabs().includes('a'), false);
 }
 
-// 2. The reported bug: last tab is itself the empty New Session. DSH would reopen the same blank.
+// 2. The reported bug: the last tab is itself the empty New Session, which DSH would just reopen.
 {
-  const p = makePage({ sessions: [{ id: 'blank1', blank: true }], current: 'blank1', tabs: ['blank1'],
-    onStart: (pg) => pg.show('blank1') });
+  const p = makePage({ sessions: [{ id: 'blank1', blank: true }], current: 'blank1', tabs: ['blank1'] });
   p.clickClose('blank1');
+  await tick();
   check('2 blank last tab is kept', p.tabs(), ['blank1']);
-  check('2 no pointless New Session request', p.started, 0);
+  check('2 no pointless work', [p.connected, p.started], [0, 0]);
 }
 
-// 3. New Session never lands (fails / superseded): the Session stays on screen, so its tab comes back.
+// 3. Opening the replacement fails: the tab stays closed, and the closed Session is never shown as a tab again.
 {
-  const p = makePage({ sessions: [{ id: 'a', title: 'A' }], current: 'a', tabs: ['a'], onStart: () => {} });
+  const p = makePage({ sessions: [{ id: 'a', title: 'A' }], current: 'a', tabs: ['a'], connect: 'reject' });
   p.clickClose('a');
-  check('3 tab hidden while New Session is pending', p.tabs(), []);
-  p.advance(5000); p.emit();
-  check('3 tab restored after New Session failed', p.tabs(), ['a']);
+  await tick();
+  check('3 falls back to New Session', p.started, 1);
+  check('3 closed tab is not resurrected', p.tabs(), []);
+  p.advance(10000); p.emit();
+  check('3 still not resurrected later', p.tabs(), []);
 }
 
-// 4. New Session is slow but arrives within the wait: no flicker back.
+// 4. connectWorkspace resolves without a Session: same fallback, still no resurrection.
 {
-  let land;
-  const p = makePage({ sessions: [{ id: 'a', title: 'A' }, { id: 'blank1', blank: true }], current: 'a', tabs: ['a'],
-    onStart: (pg) => { land = () => pg.show('blank1'); } });
+  const p = makePage({ sessions: [{ id: 'a', title: 'A' }], current: 'a', tabs: ['a'], connect: 'empty' });
   p.clickClose('a');
-  p.advance(1500); land();
-  p.advance(5000); p.emit();
-  check('4 slow New Session -> only the blank tab', p.tabs(), ['blank1']);
+  await tick();
+  check('4 falls back when there is no Session', p.started, 1);
+  check('4 closed tab is not resurrected', p.tabs(), []);
 }
 
-// 5. Closing one of several tabs still switches to the most recent survivor (unchanged behaviour).
+// 5. A slow replacement still ends on the new blank only.
 {
-  const p = makePage({ sessions: [{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }], current: 'b', tabs: ['a', 'b'], onStart: () => {} });
+  const p = makePage({ sessions: [{ id: 'a', title: 'A' }, { id: 'blank1', blank: true }], current: 'a', tabs: ['a'] });
+  p.clickClose('a');
+  p.advance(1500);
+  check('5 nothing shown before the blank arrives', p.tabs(), []);
+  await tick();
+  p.advance(5000); p.emit();
+  check('5 only the blank tab after', p.tabs(), ['blank1']);
+}
+
+// 6. Closing one of several tabs still switches to the most recent survivor (unchanged behaviour).
+{
+  const p = makePage({ sessions: [{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }], current: 'b', tabs: ['a', 'b'] });
   p.clickClose('b');
-  check('5 closes to the neighbour', p.current, 'a');
-  check('5 no New Session', p.started, 0);
-  check('5 tabs', p.tabs(), ['a']);
+  await tick();
+  check('6 closes to the neighbour', p.current, 'a');
+  check('6 no replacement requested', [p.connected, p.started], [0, 0]);
+  check('6 tabs', p.tabs(), ['a']);
 }
 
-// 6. Closing a background tab never touches the main view.
+// 7. Closing a background tab never touches the main view, nor opens anything.
 {
-  const p = makePage({ sessions: [{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }], current: 'b', tabs: ['a', 'b'], onStart: () => {} });
+  const p = makePage({ sessions: [{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }], current: 'b', tabs: ['a', 'b'] });
   p.clickClose('a');
-  check('6 background close keeps view', p.current, 'b');
-  check('6 tabs', p.tabs(), ['b']);
+  await tick();
+  check('7 background close keeps view', p.current, 'b');
+  check('7 nothing opened', [p.connected, p.started, p.opened], [0, 0, []]);
+  check('7 tabs', p.tabs(), ['b']);
 }
 
-// 7. The restored tab keeps the group it was in when it closed.
+// 8. A grouped last tab: the group goes with it, and the replacement tab is not dragged into the group.
 {
-  const p = makePage({ sessions: [{ id: 'a', title: 'A' }], current: 'a', tabs: ['a'],
-    groups: [{ id: 'g1', name: '组 1', color: 'blue' }], groupOf: { a: 'g1' }, onStart: () => {} });
+  const p = makePage({ sessions: [{ id: 'a', title: 'A' }, { id: 'blank1', blank: true }], current: 'a', tabs: ['a'],
+    groups: [{ id: 'g1', name: '组 1', color: 'blue' }], groupOf: { a: 'g1' } });
   p.clickClose('a');
-  p.advance(5000); p.emit();
-  check('7 tab restored', p.tabs(), ['a']);
-  check('7 still in its group', p.state().groupOf.a, 'g1');
+  await tick();
+  check('8 replacement shown', p.tabs(), ['blank1']);
+  check('8 empty group dropped', p.state().groups, []);
+  check('8 replacement not in a group', p.state().groupOf.blank1, undefined);
 }
 
 console.log(failures ? `${failures} failed` : 'all passed');

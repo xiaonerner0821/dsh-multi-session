@@ -38,7 +38,6 @@ window.__ModuleLoader__.load({
     const MAX_TABS = 60;         // hard cap on remembered tabs (hidden ones included)
     const MAX_CLOSED = 20;
     const RETRY_FAILED_MS = 30000;
-    const LEAVE_WAIT_MS = 4000;  // how long New Session may take after the last tab closed
     const TB_MIN = 30;
     const TB_MAX = 48;
     const TB_DEFAULT = 36;       // a touch slimmer than the shipped 40px caption
@@ -902,25 +901,29 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
           if (s.groups.some((g) => g.id === gid)) queueMicrotask(() => actions.dropToGroup(fresh, gid));
         });
 
-        // The last tab was closed and New Session was requested: { id, index, pinned, until }.
-        let leaving = null;
-        // Settle `leaving` once the main view has moved on, or restore the tab when it never did.
-        const checkLeaving = () => {
-          if (!leaving) return;
-          const cur = currentOf(listSnap());
-          if (cur !== leaving.id) { leaving = null; return; } // moved on (or the main view was cleared)
-          if (Date.now() < leaving.until) return;             // New Session may still be on its way
-          const rec = leaving;
-          leaving = null;
-          store.set((s) => {
-            if (s.tabs.includes(rec.id)) return s;
-            const tabs = s.tabs.slice();
-            tabs.splice(Math.min(Math.max(rec.index, 0), tabs.length), 0, rec.id);
-            const pinned = rec.pinned ? [...s.pinned, rec.id] : s.pinned;
-            const groupOf = { ...s.groupOf };
-            if (!rec.pinned && rec.group && s.groups.some((g) => g.id === rec.group)) groupOf[rec.id] = rec.group;
-            return normalizeOrder({ ...s, tabs, pinned, groups: !rec.pinned && rec.groupDef && !s.groups.some((g) => g.id === rec.groupDef.id) ? [...s.groups, rec.groupDef] : s.groups, groupOf: !rec.pinned && rec.groupDef && !groupOf[rec.id] ? { ...groupOf, [rec.id]: rec.groupDef.id } : groupOf, seen: { ...s.seen, [rec.id]: Date.now() }, current: rec.id, closed: s.closed.filter((c) => c.id !== rec.id) });
-          });
+        // Open a fresh Session after the last tab closed, so the main view leaves the Session that was closed.
+        // `startSession` abandons the switch when a later navigation supersedes it and only logs the failure,
+        // which is how a closed tab's Session could stay on screen; connecting first and then opening cannot be
+        // superseded, because openSession replaces the main view under the owner's own signal.
+        const openReplacement = (closedId) => {
+          const ws = workspaceOf(closedId);
+          const api = ctx.uiWorkspace;
+          if (ws && api && typeof api.connectWorkspace === 'function' && typeof api.openSession === 'function') {
+            let done = false;
+            const fallback = () => {
+              if (done) return;
+              done = true;
+              actions.newSession(closedId);
+            };
+            Promise.resolve(api.connectWorkspace(ws)).then((id) => {
+              if (done) return;
+              if (!id) { fallback(); return; }
+              done = true;
+              api.openSession(id);
+            }, fallback);
+            return;
+          }
+          actions.newSession(closedId);
         };
 
         // ---------------- actions
@@ -976,11 +979,8 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
             if (cur && closing.has(cur)) {
               if (fallback) actions.activate(fallback);
               else {
-                // New Session is asynchronous and may fail, be superseded, or land on the same Session.
-                // If the closed Session is still in the main view afterwards, give its tab back.
-                leaving = { id: cur, index: s0.tabs.indexOf(cur), pinned: s0.pinned.includes(cur), group: s0.groupOf[cur] || undefined, groupDef: (s0.groups || []).find((g) => g.id === s0.groupOf[cur]), until: Date.now() + LEAVE_WAIT_MS };
-                setTimeout(() => checkLeaving(), LEAVE_WAIT_MS + 50);
-                actions.newSession(cur);
+                // The tab stays closed: open a fresh Session so the main view leaves this one.
+                openReplacement(cur);
               }
             }
           },
@@ -1370,7 +1370,6 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
             return true;
           };
           const onList = () => {
-            checkLeaving();
             if (tryRestore()) return;
             followMainView();
             const sig = signature();
