@@ -1,6 +1,6 @@
 {
   "name": "@xiaonerner0821/dsh-multi-session",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Multi-session tabs for DeepSeek Harness: switch between sessions in one window, keep background tabs warm, and see their run state at a glance.",
   "type": "module",
   "license": "MIT",
@@ -22,6 +22,7 @@
   "files": ["index.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md", "LICENSE"],
   "scripts": {
     "check": "node --check client.js && node --check index.js",
+    "test": "node test/close-last.test.mjs",
     "prepublishOnly": "npm run check"
   },
   "publishConfig": {

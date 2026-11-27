@@ -38,6 +38,7 @@ window.__ModuleLoader__.load({
     const MAX_TABS = 60;         // hard cap on remembered tabs (hidden ones included)
     const MAX_CLOSED = 20;
     const RETRY_FAILED_MS = 30000;
+    const LEAVE_WAIT_MS = 4000;  // how long New Session may take after the last tab closed
     const TB_MIN = 30;
     const TB_MAX = 48;
     const TB_DEFAULT = 36;       // a touch slimmer than the shipped 40px caption
@@ -900,6 +901,28 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
           pendingGroupJoin.gid = null;
           if (s.groups.some((g) => g.id === gid)) queueMicrotask(() => actions.dropToGroup(fresh, gid));
         });
+
+        // The last tab was closed and New Session was requested: { id, index, pinned, until }.
+        let leaving = null;
+        // Settle `leaving` once the main view has moved on, or restore the tab when it never did.
+        const checkLeaving = () => {
+          if (!leaving) return;
+          const cur = currentOf(listSnap());
+          if (cur !== leaving.id) { leaving = null; return; } // moved on (or the main view was cleared)
+          if (Date.now() < leaving.until) return;             // New Session may still be on its way
+          const rec = leaving;
+          leaving = null;
+          store.set((s) => {
+            if (s.tabs.includes(rec.id)) return s;
+            const tabs = s.tabs.slice();
+            tabs.splice(Math.min(Math.max(rec.index, 0), tabs.length), 0, rec.id);
+            const pinned = rec.pinned ? [...s.pinned, rec.id] : s.pinned;
+            const groupOf = { ...s.groupOf };
+            if (!rec.pinned && rec.group && s.groups.some((g) => g.id === rec.group)) groupOf[rec.id] = rec.group;
+            return normalizeOrder({ ...s, tabs, pinned, groups: !rec.pinned && rec.groupDef && !s.groups.some((g) => g.id === rec.groupDef.id) ? [...s.groups, rec.groupDef] : s.groups, groupOf: !rec.pinned && rec.groupDef && !groupOf[rec.id] ? { ...groupOf, [rec.id]: rec.groupDef.id } : groupOf, seen: { ...s.seen, [rec.id]: Date.now() }, current: rec.id, closed: s.closed.filter((c) => c.id !== rec.id) });
+          });
+        };
+
         // ---------------- actions
         const actions = {
           current: () => currentOf(listSnap()),
@@ -932,6 +955,13 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
                 const at = s0.seen[id] || 0;
                 if (at > best) { best = at; fallback = id; }
               }
+              // The last tab is an empty New Session: DSH's New Session would open this very blank again,
+              // so the tab would vanish while its view stays. Keep it, like closing a browser's last blank tab.
+              const summary = list && list.byId && list.byId[cur];
+              if (!fallback && summary && summary.blank) {
+                closing.delete(cur);
+                if (!closing.size) return;
+              }
             }
             const now = Date.now();
             const records = [...closing].map((id) => ({ id, title: titleOf(list && list.byId && list.byId[id], t), index: s0.tabs.indexOf(id), at: now, pinned: s0.pinned.includes(id), group: s0.groupOf[id] || undefined }));
@@ -945,7 +975,13 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
             });
             if (cur && closing.has(cur)) {
               if (fallback) actions.activate(fallback);
-              else actions.newSession(cur);
+              else {
+                // New Session is asynchronous and may fail, be superseded, or land on the same Session.
+                // If the closed Session is still in the main view afterwards, give its tab back.
+                leaving = { id: cur, index: s0.tabs.indexOf(cur), pinned: s0.pinned.includes(cur), group: s0.groupOf[cur] || undefined, groupDef: (s0.groups || []).find((g) => g.id === s0.groupOf[cur]), until: Date.now() + LEAVE_WAIT_MS };
+                setTimeout(() => checkLeaving(), LEAVE_WAIT_MS + 50);
+                actions.newSession(cur);
+              }
             }
           },
           closeOthers(id) { const s = store.get(); actions.close(s.tabs.filter((x) => x !== id && !s.pinned.includes(x))); },
@@ -1334,6 +1370,7 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
             return true;
           };
           const onList = () => {
+            checkLeaving();
             if (tryRestore()) return;
             followMainView();
             const sig = signature();
@@ -1596,7 +1633,7 @@ header:has(> [data-conversation-header-leading] .dms-strip[data-host=leading]){p
         });
 
         // left edge in the title bar: after the Desktop-owned menu, measured by hit-testing the caption row
-        // The Desktop preload mounts its menubar as a shadow host `[data-windows-menu]` (应用 / 编辑 / 查看 / 窗口).
+        // The Desktop preload mounts its menubar (应用 / 编辑 in DSH NEXT) as a shadow host `[data-windows-menu]`.
         const desktopMenu = () => document.querySelector('[data-windows-menu]');
         function measureMenuEnd(stripEl) {
           const menuHost = desktopMenu();
